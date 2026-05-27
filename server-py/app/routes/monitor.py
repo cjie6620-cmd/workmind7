@@ -172,6 +172,7 @@ async def get_stats():
             'costCNY': round(c['costCNY'], 5),
             'latencyMs': c['latencyMs'],
             'fromCache': c['fromCache'],
+            'error': c.get('error', False),
         } for c in reversed(_calls[-50:])],
         'cacheStats': cache.get_stats(),
     }
