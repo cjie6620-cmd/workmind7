@@ -1,8 +1,34 @@
-# 统一错误处理：错误分类、用户友好提示
+"""
+错误处理模块
+
+提供统一的错误分类和 SSE 错误格式化：
+1. AppError: 应用层异常类
+2. classify_error: 根据异常类型分类
+3. send_sse_error: 生成 SSE 格式的错误事件
+
+错误分类：
+- RATE_LIMIT: API 限流
+- AUTH_ERROR: 认证失败
+- SERVICE_ERROR: 服务不可用
+- TIMEOUT: 请求超时
+- UNKNOWN: 未知错误
+"""
+
 import json
 
 
 class AppError(Exception):
+    """
+    应用层异常
+
+    参数：
+    - message: 错误消息
+    - code: 错误代码
+    - status_code: HTTP 状态码
+    - retryable: 是否可重试
+    - user_message: 用户友好的错误提示
+    """
+
     def __init__(self, message, code='UNKNOWN', status_code=500, retryable=False, user_message=None):
         super().__init__(message)
         self.code = code
@@ -12,10 +38,24 @@ class AppError(Exception):
 
 
 def classify_error(err):
+    """
+    错误分类
+
+    根据异常类型或状态码，返回标准化的 AppError
+
+    规则：
+    - 已经是 AppError：直接返回
+    - HTTP 429：限流错误
+    - HTTP 401/403：认证失败
+    - HTTP 5xx 或连接断开：服务不可用
+    - 超时关键词：请求超时
+    - 其他：未知错误
+    """
     if isinstance(err, AppError):
         return err
 
     msg = str(err)
+    # 尝试从异常对象获取状态码
     status = getattr(err, 'status_code', None) or getattr(err, 'status', None)
 
     if status == 429:
@@ -34,7 +74,15 @@ def classify_error(err):
 
 
 def send_sse_error(err):
-    """生成 SSE 格式的错误事件字符串"""
+    """
+    生成 SSE 格式的错误事件
+
+    用于 SSE 流式响应中的错误推送
+
+    返回格式：
+    event: error
+    data: {"message": "...", "retryable": true/false}
+    """
     app_err = classify_error(err)
     data = json.dumps({'message': app_err.user_message, 'retryable': app_err.retryable}, ensure_ascii=False)
     return f'event: error\ndata: {data}\n\n'

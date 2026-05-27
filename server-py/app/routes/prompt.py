@@ -1,4 +1,22 @@
-# Prompt 调试路由：测试 + A/B + 模板 CRUD
+"""
+Prompt 调试路由模块
+
+提供 Prompt 模板管理和测试功能：
+- POST /test/stream: 测试 Prompt 效果（SSE 流式）
+- POST /ab-test: A/B 测试对比两个 Prompt
+- GET /templates: 获取模板列表
+- GET /templates/{template_id}: 获取模板详情
+- POST /templates: 创建模板
+- PUT /templates/{template_id}: 更新模板
+- DELETE /templates/{template_id}: 删除模板
+
+特点：
+- 支持自定义 temperature、maxTokens
+- 自动计算 Token 消耗和费用
+- A/B 测试自动评分对比
+- 模板版本管理
+"""
+
 import json
 import time as _time
 from datetime import datetime
@@ -18,11 +36,23 @@ prompt_router = APIRouter()
 
 
 def sse(event, data):
+    """将数据格式化为 SSE 事件格式"""
     return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @prompt_router.post('/test/stream')
 async def prompt_test_stream(req: dict):
+    """
+    测试 Prompt 接口
+
+    参数：
+    - systemPrompt: 系统提示词
+    - userMessage: 测试消息
+    - temperature: 温度参数（默认 0.7）
+    - maxTokens: 最大 token 数（默认 1000）
+
+    返回：流式响应 + Token 统计 + 费用估算
+    """
     system_prompt = req.get('systemPrompt', '')
     user_message = (req.get('userMessage') or '').strip()
     temperature = req.get('temperature', 0.7)
@@ -33,6 +63,7 @@ async def prompt_test_stream(req: dict):
 
     async def event_generator():
         try:
+            # 创建独立模型实例用于测试
             test_model = create_chat_model(temperature=temperature, streaming=True)
 
             messages = []
@@ -57,6 +88,7 @@ async def prompt_test_stream(req: dict):
 
             latency_ms = int(_time.time() * 1000) - start_ms
 
+            # DeepSeek 定价：输入 $0.27/M，输出 $1.10/M，汇率 7.2
             yield sse('done', {
                 'latencyMs': latency_ms,
                 'inputTokens': input_tokens,
@@ -79,6 +111,16 @@ async def prompt_test_stream(req: dict):
 
 @prompt_router.post('/ab-test')
 async def prompt_ab_test(req: dict):
+    """
+    A/B 测试接口
+
+    对比两个不同 Prompt 的回答效果：
+    1. 同一问题，两个 Prompt 分别生成回答
+    2. 评估两个回答的质量（相关性、准确性、清晰度、简洁性）
+    3. 综合比较，选出更优的 Prompt
+
+    返回：两个回答 + 评分 + 获胜者
+    """
     question = (req.get('question') or '').strip()
     system_prompt_a = req.get('systemPromptA', '')
     system_prompt_b = req.get('systemPromptB', '')
@@ -91,6 +133,7 @@ async def prompt_ab_test(req: dict):
     try:
         test_model = create_chat_model(temperature=temperature)
 
+        # 并行调用两个 Prompt
         msgs_a = ([SystemMessage(system_prompt_a)] if system_prompt_a else []) + [HumanMessage(question)]
         msgs_b = ([SystemMessage(system_prompt_b)] if system_prompt_b else []) + [HumanMessage(question)]
         res_a, res_b = await test_model.ainvoke(msgs_a), await test_model.ainvoke(msgs_b)
@@ -98,6 +141,7 @@ async def prompt_ab_test(req: dict):
         answer_a = res_a.content
         answer_b = res_b.content
 
+        # 评分对比
         evaluation = await score_ab_test(question, answer_a, answer_b)
 
         return {'answerA': answer_a, 'answerB': answer_b, 'evaluation': evaluation}
@@ -110,11 +154,13 @@ async def prompt_ab_test(req: dict):
 
 @prompt_router.get('/templates')
 async def list_prompt_templates():
+    """获取所有 Prompt 模板（按创建时间倒序）"""
     return {'templates': list_templates()}
 
 
 @prompt_router.get('/templates/{template_id}')
 async def get_prompt_template(template_id: str):
+    """获取指定模板详情"""
     t = get_template(template_id)
     if not t:
         return JSONResponse(status_code=404, content={'error': {'message': '模板不存在'}})
@@ -123,6 +169,11 @@ async def get_prompt_template(template_id: str):
 
 @prompt_router.post('/templates')
 async def create_prompt_template(req: dict):
+    """
+    创建 Prompt 模板
+
+    参数：name（名称）、systemPrompt（内容）、description（描述）、tags（标签）
+    """
     name = (req.get('name') or '').strip()
     system_prompt = (req.get('systemPrompt') or '').strip()
     if not name or not system_prompt:
@@ -133,6 +184,7 @@ async def create_prompt_template(req: dict):
 
 @prompt_router.put('/templates/{template_id}')
 async def update_prompt_template(template_id: str, req: dict):
+    """更新模板（同时保存历史版本）"""
     template = save_template(
         req.get('name', ''), req.get('systemPrompt', ''),
         req.get('description', ''), req.get('tags', []),
@@ -143,6 +195,7 @@ async def update_prompt_template(template_id: str, req: dict):
 
 @prompt_router.delete('/templates/{template_id}')
 async def remove_prompt_template(template_id: str):
+    """删除模板（内置模板不可删除）"""
     try:
         delete_template(template_id)
         return {'success': True}

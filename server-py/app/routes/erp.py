@@ -1,4 +1,21 @@
-# ERP 路由：智能填单 + 审批流
+"""
+ERP 路由模块
+
+提供智能填单和审批流功能：
+- POST /parse: 自然语言描述解析为结构化表单（报销/请假）
+- POST /submit/stream: 提交申请，启动 Multi-Agent 审批流
+- GET /applications: 获取申请列表
+- GET /applications/{app_id}: 获取申请详情
+- GET /roles: 获取审批角色列表
+
+审批流角色：
+- applicant: 申请人
+- manager: 直属主管
+- finance: 财务专员
+- hr: HR 专员
+- director: 部门总监
+"""
+
 import asyncio
 import json
 from datetime import datetime
@@ -13,15 +30,26 @@ from ..utils.logger import logger
 
 erp_router = APIRouter()
 
+# 内存存储申请数据（生产环境应使用数据库）
 applications = {}
 
 
 def sse(event, data):
+    """将数据格式化为 SSE 事件格式"""
     return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @erp_router.post('/parse')
 async def erp_parse(req: dict):
+    """
+    表单解析接口
+
+    将自然语言描述转换为结构化表单：
+    - 报销单：费用类型、明细、总金额、事由
+    - 请假单：假期类型、日期、天数、原因
+
+    支持合规检查（报销限额等）
+    """
     text = (req.get('text') or '').strip()
     form_type = req.get('formType')
 
@@ -33,12 +61,13 @@ async def erp_parse(req: dict):
     try:
         if form_type == 'expense':
             form = await parse_expense_form(text)
+            # 合规检查，补充警告信息
             alerts = check_compliance(form)
             form.warnings = list(form.warnings) + alerts
         else:
             form = await parse_leave_form(text)
 
-        # pydantic model → dict
+        # Pydantic model → dict
         form_dict = form.model_dump(by_alias=False)
         return {'success': True, 'form': form_dict, 'formType': form_type}
     except Exception as err:
@@ -48,6 +77,24 @@ async def erp_parse(req: dict):
 
 @erp_router.post('/submit/stream')
 async def erp_submit_stream(req: dict):
+    """
+    提交申请接口
+
+    流程：
+    1. 生成申请 ID
+    2. 存储申请数据
+    3. 启动异步审批流
+    4. SSE 流式推送审批过程
+
+    SSE 事件：
+    - start: 申请开始
+    - plan: 审批流程规划
+    - approver_start: 审批人开始审核
+    - message: 审批人消息（问题/回答/决定）
+    - approver_done: 审批人完成
+    - final: 最终结果
+    - done: 完成
+    """
     form_data = req.get('formData')
     form_type = req.get('formType')
     applicant_name = req.get('applicantName', '申请人')
@@ -55,6 +102,7 @@ async def erp_submit_stream(req: dict):
     if not form_data or not form_type:
         return JSONResponse(status_code=400, content={'error': {'message': '缺少表单数据'}})
 
+    # 生成唯一申请 ID
     app_id = f'APP{int(datetime.now().timestamp() * 1000)}'
     application = {
         'id': app_id,
@@ -70,7 +118,9 @@ async def erp_submit_stream(req: dict):
     done_event = asyncio.Event()
 
     async def collect_event(event_type, data):
+        """收集审批流事件"""
         await queue.put(sse(event_type, data))
+        # 同步存储消息记录
         if event_type == 'message':
             application['messages'].append(data)
 
@@ -107,6 +157,11 @@ async def erp_submit_stream(req: dict):
 
 @erp_router.get('/applications')
 async def list_applications():
+    """
+    获取申请列表
+
+    返回所有申请摘要，按创建时间倒序排列
+    """
     app_list = sorted(applications.values(), key=lambda a: a['createdAt'], reverse=True)
     return {
         'applications': [{
@@ -123,6 +178,7 @@ async def list_applications():
 
 @erp_router.get('/applications/{app_id}')
 async def get_application(app_id: str):
+    """获取申请详情（包含完整表单数据、审批消息记录）"""
     app = applications.get(app_id)
     if not app:
         return JSONResponse(status_code=404, content={'error': {'message': '申请不存在'}})
@@ -131,4 +187,5 @@ async def get_application(app_id: str):
 
 @erp_router.get('/roles')
 async def erp_roles():
+    """获取审批角色定义"""
     return {'roles': list(APPROVAL_ROLES.values())}

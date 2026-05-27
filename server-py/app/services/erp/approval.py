@@ -1,4 +1,13 @@
-# Multi-Agent 审批流
+"""
+Multi-Agent 审批流模块
+
+实现多人会签审批流程：
+1. 规划审批流（根据表单类型和金额决定审批节点）
+2. 每个审批节点由一个 Agent 角色执行
+3. 支持追问（审批人提问 → 申请人回答 → 审批人决定）
+4. 任一审批人驳回则流程终止
+"""
+
 import json
 from datetime import datetime
 
@@ -9,6 +18,7 @@ from ...utils.logger import logger
 
 model = create_chat_model(temperature=0.3)
 
+# 审批角色定义
 APPROVAL_ROLES = {
     'applicant': {'id': 'applicant', 'name': '申请人', 'icon': '👤', 'color': '#4f46e5',
                   'desc': '提交申请，回答审批人的问题'},
@@ -24,6 +34,11 @@ APPROVAL_ROLES = {
 
 
 def _get_role_system(role_id, form_data, form_type):
+    """
+    生成审批角色的系统提示词
+
+    不同角色有不同的职责和检查要点
+    """
     form_json = json.dumps(form_data, ensure_ascii=False, indent=2)
     applicant_name = form_data.get('applicantName', '小王')
     kind = '报销' if form_type == 'expense' else '请假'
@@ -67,6 +82,13 @@ def _get_role_system(role_id, form_data, form_type):
 
 
 def _plan_approval_flow(form_data, form_type):
+    """
+    规划审批流程
+
+    根据表单类型和金额/天数决定审批节点：
+    - 报销：manager → finance → director(>5000)
+    - 请假：manager → hr → director(>5工作日)
+    """
     flow = ['manager']
     if form_type == 'expense':
         flow.append('finance')
@@ -80,17 +102,27 @@ def _plan_approval_flow(form_data, form_type):
 
 
 def _is_approved(text):
+    """判断是否为批准"""
     reject_keywords = ['驳回', '不批', '拒绝', '不同意', '不予批准', '无法批准']
     return not any(kw in text for kw in reject_keywords)
 
 
 async def _run_approver_turn(role_id, form_data, form_type, conversation_history, emit_event):
+    """
+    执行单个审批人的审核
+
+    流程：
+    1. 审批人查看申请，给出意见
+    2. 如有问题，追问申请人
+    3. 申请人回答
+    4. 审批人给出最终决定
+    """
     role = APPROVAL_ROLES[role_id]
     system_prompt = _get_role_system(role_id, form_data, form_type)
 
     logger.info('erp: approver turn', {'roleId': role_id})
 
-    # 1. 审批人查看申请
+    # 1. 审批人审核
     question_response = await model.ainvoke([
         SystemMessage(system_prompt),
         HumanMessage('请审核这份申请。如果有疑问，可以提问；如果信息充分，直接给出审批意见（批准/驳回）。'),
@@ -106,10 +138,11 @@ async def _run_approver_turn(role_id, form_data, form_type, conversation_history
     })
     conversation_history.append(AIMessage(f'[{role["name"]}]：{question_text}'))
 
-    # 2. 是否有追问
+    # 2. 检查是否有追问（问号）
     has_question = any(kw in question_text for kw in ['？', '?', '请问', '能否'])
 
     if has_question and role_id != 'director':
+        # 申请人回答
         applicant_system = _get_role_system('applicant', form_data, form_type)
         answer_response = await model.ainvoke([
             SystemMessage(applicant_system),
@@ -148,8 +181,24 @@ async def _run_approver_turn(role_id, form_data, form_type, conversation_history
 
 
 async def run_approval_flow(form_data, form_type, emit_event):
+    """
+    执行完整的审批流程
+
+    参数：
+    - form_data: 表单数据
+    - form_type: 表单类型（expense/leave）
+    - emit_event: 事件回调，用于 SSE 推送
+
+    SSE 事件：
+    - plan: 审批流程规划
+    - approver_start: 审批人开始
+    - message: 审批消息
+    - approver_done: 审批人完成
+    - final: 最终结果
+    """
     logger.info('erp: approval flow started', {'formType': form_type})
 
+    # 1. 规划审批流
     approver_ids = _plan_approval_flow(form_data, form_type)
 
     await emit_event('plan', {
@@ -165,6 +214,7 @@ async def run_approval_flow(form_data, form_type, emit_event):
     all_approved = True
     final_comment = ''
 
+    # 2. 依次执行每个审批人
     for role_id in approver_ids:
         role = APPROVAL_ROLES[role_id]
         await emit_event('approver_start', {'roleId': role_id, 'role': role})
@@ -178,6 +228,7 @@ async def run_approval_flow(form_data, form_type, emit_event):
             'approved': result['approved'], 'comment': result['comment'],
         })
 
+        # 驳回则终止流程
         if not result['approved']:
             all_approved = False
             final_comment = f'被{role["name"]}驳回：{result["comment"]}'
@@ -185,8 +236,9 @@ async def run_approval_flow(form_data, form_type, emit_event):
 
         final_comment = result['comment']
         import asyncio
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.3)  # 间隔，避免过快
 
+    # 3. 返回结果
     output = {
         'approved': all_approved,
         'status': 'approved' if all_approved else 'rejected',

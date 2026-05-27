@@ -1,4 +1,20 @@
-# 对话路由：流式对话 + 缓存 + 会话管理 + 画像
+"""
+对话路由模块
+
+提供智能对话功能：
+- POST /stream: 流式对话（支持缓存、会话历史、用户画像）
+- GET /sessions: 获取会话列表
+- DELETE /sessions/{session_id}: 删除会话
+- GET /profile/{user_id}: 获取用户画像
+- GET /roles: 获取内置角色列表
+
+核心特性：
+- SSE 流式响应，实时推送 token
+- 精确缓存：相同 system prompt + message 返回缓存结果
+- 多角色预设：default/tech/hr/legal
+- 用户画像：自动从对话中提取用户背景信息
+"""
+
 import asyncio
 import json
 
@@ -6,7 +22,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from ..services.model import chat_model
+from ..services.model import get_chat_model
 from ..services.cache import cache
 from ..services.chat.memory import (
     get_history, trim_history, clear_history,
@@ -19,7 +35,7 @@ from ..utils.logger import logger
 
 chat_router = APIRouter()
 
-# 内置角色预设
+# 内置角色预设：不同角色使用不同的 system prompt
 ROLES = {
     'default': '你是 WorkMind AI，一个智能办公助手，回答简洁专业。',
     'tech': '你是资深技术顾问，精通 Vue3、React、Node.js 等前端技术栈。回答要有代码示例，说明清楚原理。',
@@ -29,17 +45,37 @@ ROLES = {
 
 
 def sse(event, data):
+    """将数据格式化为 SSE 事件格式"""
     return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @chat_router.post('/stream')
 async def chat_stream(req: ChatRequest):
-    message = req.message
-    session_id = req.session_id
-    role = req.role
-    user_id = req.user_id
+    """
+    流式对话接口
 
-    # 安全检查
+    流程：
+    1. 安全检查（Prompt 注入检测）
+    2. 构建 system prompt（含用户画像）
+    3. 缓存检查（命中则直接返回）
+    4. 获取会话历史并裁剪
+    5. 流式调用模型
+    6. 更新会话历史
+    7. 写入缓存
+    8. 异步更新用户画像
+
+    SSE 事件：
+    - start: 开始响应
+    - cache_hit: 命中缓存
+    - token: 增量 token
+    - done: 响应完成
+    """
+    message = req.message
+    session_id = req.sessionId
+    role = req.role
+    user_id = req.userId
+
+    # 安全检查：Prompt 注入检测
     if check_injection(message):
         return StreamingResponse(
             iter([sse('error', {'message': '输入内容不符合使用规范', 'retryable': False})]),
@@ -54,12 +90,13 @@ async def chat_stream(req: ChatRequest):
             profile_ctx = profile_to_context(profile)
             system_prompt = base_system + profile_ctx
 
-            # 2. 缓存检查
+            # 2. 缓存检查：相同的 system prompt + message 命中缓存
             cached = cache.get(system_prompt, message)
             if cached:
                 logger.info('cache hit', {'sessionId': session_id, 'msg': message[:30]})
                 yield sse('cache_hit', {})
                 content = cached['content']
+                # 模拟打字机效果，逐字符推送
                 for i in range(0, len(content), 3):
                     yield sse('token', {'token': content[i:i + 3]})
                     await asyncio.sleep(0.006)
@@ -68,9 +105,10 @@ async def chat_stream(req: ChatRequest):
 
             # 3. 会话历史
             history = get_history(session_id)
+            # 裁剪历史消息，保留近 2000 token
             trimmed = trim_history(history, 2000)
 
-            # 4. 消息列表
+            # 4. 构建消息列表
             messages = [SystemMessage(system_prompt), *trimmed, HumanMessage(message)]
 
             yield sse('start', {'sessionId': session_id})
@@ -80,7 +118,7 @@ async def chat_stream(req: ChatRequest):
             input_tokens = 0
             output_tokens = 0
 
-            async for chunk in chat_model.astream(messages):
+            async for chunk in get_chat_model().astream(messages):
                 if chunk.content:
                     full_reply += chunk.content
                     yield sse('token', {'token': chunk.content})
@@ -88,7 +126,7 @@ async def chat_stream(req: ChatRequest):
                     input_tokens = chunk.usage_metadata.get('input_tokens', 0) or 0
                     output_tokens = chunk.usage_metadata.get('output_tokens', 0) or 0
 
-            # 6. 更新会话历史
+            # 6. 更新会话历史（保留最近 20 条）
             history.append(HumanMessage(message))
             history.append(AIMessage(full_reply))
             if len(history) > 20:
@@ -100,7 +138,7 @@ async def chat_stream(req: ChatRequest):
                 'tokens': input_tokens + output_tokens,
             })
 
-            # 8. 异步更新画像
+            # 8. 异步更新用户画像（不阻塞响应）
             fire_and_forget_profile(user_id, message, full_reply)
 
             yield sse('done', {'fromCache': False, 'inputTokens': input_tokens, 'outputTokens': output_tokens})
@@ -123,22 +161,30 @@ async def chat_stream(req: ChatRequest):
 
 @chat_router.get('/sessions')
 async def get_sessions():
+    """获取所有会话列表"""
     return {'sessions': list_sessions()}
 
 
 @chat_router.delete('/sessions/{session_id}')
 async def delete_session(session_id: str):
+    """删除指定会话"""
     clear_history(session_id)
     return {'success': True}
 
 
 @chat_router.get('/profile/{user_id}')
 async def get_user_profile(user_id: str):
+    """获取用户画像（camelCase 格式）"""
     return get_profile_camel(user_id)
 
 
 @chat_router.get('/roles')
 async def get_roles():
+    """
+    获取内置角色列表
+
+    返回：角色 ID、名称、图标、描述
+    """
     return {
         'roles': [
             {'id': 'default', 'label': '通用助手', 'icon': '🤖', 'desc': '日常问答、通用任务'},

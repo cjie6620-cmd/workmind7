@@ -1,12 +1,26 @@
-# RAG 查询：检索相关文档 + 生成有来源标注的回答
+"""
+RAG 查询模块
+
+RAG（Retrieval Augmented Generation）流程：
+1. retrieve_docs: 向量检索相关文档
+2. rag_query_stream: 基于检索结果生成回答
+
+特点：
+- 相似度阈值过滤（默认 0.3）
+- 支持按分类筛选
+- 生成回答时引用文档来源
+"""
+
 from langchain_core.prompts import ChatPromptTemplate
 
-from ..model import chat_model
+from ..model import get_chat_model
 from .ingest import get_vector_store
 from ...utils.logger import logger
 
+# 相似度阈值：低于此值的文档不返回
 SIMILARITY_THRESHOLD = 0.3
 
+# RAG 系统提示词
 RAG_SYSTEM = """你是 WorkMind AI 知识库助手。
 
 规则：
@@ -17,14 +31,26 @@ RAG_SYSTEM = """你是 WorkMind AI 知识库助手。
 
 
 async def retrieve_docs(question, category=None, k=4):
+    """
+    检索相关文档
+
+    参数：
+    - question: 查询问题
+    - category: 可选，按文档分类筛选
+    - k: 返回前 k 个结果
+
+    返回：相关文档列表（已按相似度排序）
+    """
     vs = await get_vector_store()
 
+    # 可选的分类过滤函数
     filter_fn = None
     if category:
         filter_fn = lambda content, meta: meta.get('category') == category
 
     results = await vs.similarity_search_with_score(question, k, filter_fn)
 
+    # 过滤低相似度结果
     relevant = [(doc, score) for doc, score in results if score > SIMILARITY_THRESHOLD]
 
     logger.info('rag: retrieved docs', {
@@ -45,25 +71,38 @@ async def retrieve_docs(question, category=None, k=4):
 
 
 async def rag_query_stream(question, options=None):
+    """
+    RAG 流式查询
+
+    返回：
+    - sources: 相关文档列表
+    - stream_answer: 生成器，流式输出回答
+
+    SSE 事件由路由层处理
+    """
     options = options or {}
     docs = await retrieve_docs(question, category=options.get('category'))
 
     async def stream_answer():
+        """流式生成回答"""
         if not docs:
             yield '知识库中未找到与该问题相关的内容。\n请尝试换一种提问方式，或上传相关文档后再试。'
             return
 
+        # 构建上下文
         context = '\n\n---\n\n'.join(
             f'[参考{i + 1}] 来源：{d["title"]}\n{d["content"]}'
             for i, d in enumerate(docs)
         )
 
+        # 构建 Prompt
         prompt = ChatPromptTemplate.from_messages([
             ('system', RAG_SYSTEM),
             ('human', '参考文档：\n{context}\n\n问题：{question}'),
         ])
 
-        chain = prompt | chat_model
+        # 执行链
+        chain = prompt | get_chat_model()
         async for chunk in chain.astream({'context': context, 'question': question}):
             if chunk.content:
                 yield chunk.content

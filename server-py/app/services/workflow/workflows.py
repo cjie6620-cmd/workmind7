@@ -1,4 +1,18 @@
-# 四个内置工作流模板
+"""
+工作流定义模块
+
+四个内置工作流（基于 LangGraph）：
+1. weekly_report: 周报生成
+2. meeting_minutes: 会议纪要
+3. email_polish: 邮件润色
+4. prd_skeleton: PRD 骨架
+
+每个工作流特点：
+- 状态机编排：多个节点顺序执行
+- 人工审核节点：中断等待用户反馈后继续
+- Checkpoint：中断后可恢复
+"""
+
 from typing import Annotated, TypedDict
 
 from langgraph.graph import StateGraph, END, START
@@ -9,9 +23,11 @@ from langchain_core.output_parsers import StrOutputParser
 from ..model import create_chat_model
 from ...utils.logger import logger
 
-model = create_chat_model(temperature=0.7)
-model0 = create_chat_model(temperature=0)
+# 创建模型实例
+model = create_chat_model(temperature=0.7)     # 创造性任务用
+model0 = create_chat_model(temperature=0)      # 提取类任务用
 parser = StrOutputParser()
+# 状态持久化器（支持中断恢复）
 checkpointer = MemorySaver()
 
 
@@ -20,17 +36,28 @@ checkpointer = MemorySaver()
 # ══════════════════════════════════════════════════════════════
 
 class WeeklyReportState(TypedDict):
-    points: str
-    dept: str
-    highlights: str
-    risks: str
-    next_plan: str
-    report: str
-    human_feedback: str
+    """周报生成工作流状态"""
+    points: str          # 输入：工作要点
+    dept: str            # 输入：部门名称
+    highlights: str      # 输出：提炼的亮点
+    risks: str          # 输出：风险阻塞项
+    next_plan: str       # 输出：下周计划
+    report: str          # 输出：最终周报
+    human_feedback: str  # 中断节点：用户反馈
 
 
 def build_weekly_report():
+    """
+    周报生成工作流
+
+    节点：
+    1. extract_highlights: 提炼工作亮点
+    2. identify_risks: 识别风险阻塞
+    3. human_review: 人工审核（可提供修改意见）
+    4. generate_report: 生成最终周报
+    """
     def extract_highlights(state: WeeklyReportState):
+        """节点1：提炼亮点"""
         logger.info('workflow:weekly → extractHighlights')
         chain = ChatPromptTemplate.from_messages([
             ('system', '你是写作助手，从工作要点中提炼亮点。输出3-5条，每条一行，用"• "开头，不超过30字。'),
@@ -39,6 +66,7 @@ def build_weekly_report():
         return {'highlights': chain.invoke({'points': state['points']})}
 
     def identify_risks(state: WeeklyReportState):
+        """节点2：识别风险"""
         logger.info('workflow:weekly → identifyRisks')
         chain = ChatPromptTemplate.from_messages([
             ('system', '从工作内容中识别风险和阻塞项。如果没有明显风险，输出"本周无明显风险项"。输出2-3条，每条一行。'),
@@ -47,10 +75,12 @@ def build_weekly_report():
         return {'risks': chain.invoke({'points': state['points']})}
 
     def human_review(state: WeeklyReportState):
+        """节点3：人工审核（中断节点）"""
         logger.info('workflow:weekly → humanReview (waiting)')
-        return {}
+        return {}  # 空更新，等待用户反馈
 
     def generate_report(state: WeeklyReportState):
+        """节点4：生成周报"""
         logger.info('workflow:weekly → generateReport')
         feedback = f'\n\n注意事项：{state["human_feedback"]}' if state.get("human_feedback") else ''
         chain = ChatPromptTemplate.from_messages([
@@ -91,6 +121,7 @@ def build_weekly_report():
     g.add_edge('identify_risks', 'human_review')
     g.add_edge('human_review', 'generate_report')
     g.add_edge('generate_report', END)
+    # interrupt_before：human_review 节点执行前中断，等待用户反馈
     return g.compile(checkpointer=checkpointer, interrupt_before=['human_review'])
 
 
@@ -99,16 +130,27 @@ def build_weekly_report():
 # ══════════════════════════════════════════════════════════════
 
 class MeetingMinutesState(TypedDict):
-    raw_notes: str
-    meeting_title: str
-    attendees: str
-    conclusions: str
-    action_items: str
-    minutes: str
-    human_feedback: str
+    """会议纪要工作流状态"""
+    raw_notes: str       # 输入：原始会议记录
+    meeting_title: str   # 输入：会议名称
+    attendees: str        # 输出：参会人与议题
+    conclusions: str      # 输出：会议结论
+    action_items: str     # 输出：Action Items
+    minutes: str          # 输出：最终纪要
+    human_feedback: str   # 中断节点：用户反馈
 
 
 def build_meeting_minutes():
+    """
+    会议纪要工作流
+
+    节点：
+    1. extract_attendees: 提取参会人和议题
+    2. extract_conclusions: 提取会议结论
+    3. extract_actions: 整理 Action Items
+    4. human_review: 人工审核
+    5. generate_minutes: 生成最终纪要
+    """
     def extract_attendees(state: MeetingMinutesState):
         logger.info('workflow:meeting → extractAttendees')
         chain = ChatPromptTemplate.from_messages([
@@ -186,15 +228,25 @@ def build_meeting_minutes():
 # ══════════════════════════════════════════════════════════════
 
 class EmailPolishState(TypedDict):
-    draft: str
-    recipient: str
-    purpose: str
-    issues: str
-    polished: str
-    human_feedback: str
+    """邮件润色工作流状态"""
+    draft: str           # 输入：邮件草稿
+    recipient: str       # 输入：收件人/场景
+    purpose: str          # 输出：意图分析
+    issues: str          # 输出：发现的问题
+    polished: str         # 输出：润色后邮件
+    human_feedback: str   # 中断节点：用户反馈
 
 
 def build_email_polish():
+    """
+    邮件润色工作流
+
+    节点：
+    1. analyze_intent: 分析写作意图
+    2. check_issues: 检查问题
+    3. human_review: 人工审核
+    4. polish_email: 生成润色版本
+    """
     def analyze_intent(state: EmailPolishState):
         logger.info('workflow:email → analyzeIntent')
         chain = ChatPromptTemplate.from_messages([
@@ -254,14 +306,24 @@ def build_email_polish():
 # ══════════════════════════════════════════════════════════════
 
 class PrdSkeletonState(TypedDict):
-    description: str
-    features: str
-    constraints: str
-    prd: str
-    human_feedback: str
+    """PRD 骨架工作流状态"""
+    description: str      # 输入：需求描述
+    features: str         # 输出：功能点
+    constraints: str      # 输出：约束条件
+    prd: str              # 输出：PRD 文档
+    human_feedback: str   # 中断节点：用户反馈
 
 
 def build_prd_skeleton():
+    """
+    PRD 骨架工作流
+
+    节点：
+    1. extract_features: 提取功能点
+    2. identify_constraints: 识别约束条件
+    3. human_review: 人工审核
+    4. generate_prd: 生成 PRD 文档
+    """
     def extract_features(state: PrdSkeletonState):
         logger.info('workflow:prd → extractFeatures')
         chain = ChatPromptTemplate.from_messages([
@@ -326,6 +388,7 @@ def build_prd_skeleton():
 
 # ── 注册表 ──────────────────────────────────────────────────
 
+# 工作流构建函数映射
 WORKFLOW_BUILDERS = {
     'weekly_report': build_weekly_report,
     'meeting_minutes': build_meeting_minutes,
@@ -333,6 +396,7 @@ WORKFLOW_BUILDERS = {
     'prd_skeleton': build_prd_skeleton,
 }
 
+# 工作流元信息（用于前端展示）
 WORKFLOW_META = {
     'weekly_report': {
         'id': 'weekly_report', 'title': '周报生成', 'icon': '📊',

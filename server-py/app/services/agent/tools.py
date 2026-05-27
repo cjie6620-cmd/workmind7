@@ -1,4 +1,18 @@
-# Agent 工具集：6 个工具
+"""
+Agent 工具集模块
+
+定义 Agent 可调用的 6 个工具：
+1. web_search: 联网搜索技术资讯
+2. read_doc: 检索知识库文档
+3. calculate: 安全数学计算
+4. get_date: 日期查询和计算
+5. write_report: 生成分析报告
+6. send_notify: 发送通知
+
+每个工具使用 @tool 装饰器声明，
+定义输入参数 schema（用于 LLM 理解如何调用）。
+"""
+
 import ast
 import json
 import operator
@@ -14,14 +28,23 @@ from ...utils.logger import logger
 # ── 工具1：联网搜索 ──────────────────────────────────────────
 
 class SearchInput(BaseModel):
+    """搜索工具输入参数"""
     query: str = Field(description='搜索关键词，尽量精确')
 
 
 @tool(args_schema=SearchInput)
 async def web_search(query: str) -> str:
-    """搜索互联网获取最新技术资讯、版本信息、最佳实践。当需要了解某个技术的最新状态或不确定某个信息时使用。"""
+    """
+    搜索互联网获取最新技术资讯
+
+    使用场景：
+    - 了解某个技术的最新版本和特性
+    - 查询不熟悉的知识点
+    - 验证技术方案的可行性
+    """
     logger.info('tool:search', {'query': query})
 
+    # 预置搜索结果（实际项目中应接入真实搜索 API）
     mock_results = {
         'Vue3': 'Vue 3.4.21 是目前最新版本，于2024年3月发布。主要改进：defineModel() 正式稳定，响应式系统性能提升约 56%。',
         'React': 'React 18.3 是最新稳定版，引入了并发渲染、useTransition、Suspense 改进。',
@@ -31,6 +54,7 @@ async def web_search(query: str) -> str:
         '微前端': 'qiankun 2.x 和 wujie 是国内最流行的微前端框架。',
     }
 
+    # 模糊匹配
     for key, val in mock_results.items():
         if key.lower() in query.lower():
             return val
@@ -40,12 +64,20 @@ async def web_search(query: str) -> str:
 # ── 工具2：读取知识库文档 ────────────────────────────────────
 
 class ReadDocInput(BaseModel):
+    """知识库查询输入参数"""
     question: str = Field(description='要查询的问题或关键词')
 
 
 @tool(args_schema=ReadDocInput)
 async def read_doc(question: str) -> str:
-    """从公司知识库检索文档内容。用于查询公司内部规定、产品手册、技术文档等。当问题涉及公司内部信息时优先使用。"""
+    """
+    从公司知识库检索文档内容
+
+    使用场景：
+    - 查询公司内部规定
+    - 查阅产品手册
+    - 获取技术文档
+    """
     logger.info('tool:read_doc', {'question': question})
     try:
         docs = await retrieve_docs(question, k=3)
@@ -59,9 +91,11 @@ async def read_doc(question: str) -> str:
 # ── 工具3：数学计算 ──────────────────────────────────────────
 
 class CalculateInput(BaseModel):
+    """计算工具输入参数"""
     expression: str = Field(description='数学表达式，如 "1500 + 800 * 0.8"')
 
 
+# 安全支持的运算符
 _SAFE_OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -75,6 +109,14 @@ _SAFE_OPS = {
 
 
 def _safe_eval(node):
+    """
+    安全求值：只允许基本数学运算，禁止任意代码执行
+
+    通过 AST 解析，只允许以下节点类型：
+    - Constant: 数字常量
+    - BinOp: 二元运算（+ - * / % ** //）
+    - UnaryOp: 一元运算（负数）
+    """
     if isinstance(node, ast.Expression):
         return _safe_eval(node.body)
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -88,9 +130,15 @@ def _safe_eval(node):
 
 @tool(args_schema=CalculateInput)
 async def calculate(expression: str) -> str:
-    """执行数学计算，支持加减乘除、括号、百分比。用于需要精确计算数值的场景。"""
+    """
+    执行数学计算
+
+    支持：+ - * / % ** // 和括号
+    使用 AST 安全解析，防止代码注入
+    """
     logger.info('tool:calculate', {'expression': expression})
     try:
+        # 过滤只保留数字和运算符
         safe_expr = ''.join(c for c in expression if c in '0123456789+-*/().% ').strip()
         if not safe_expr:
             return '无效的数学表达式'
@@ -104,6 +152,7 @@ async def calculate(expression: str) -> str:
 # ── 工具4：获取日期信息 ──────────────────────────────────────
 
 class GetDateInput(BaseModel):
+    """日期工具输入参数"""
     operation: str = Field(description='today=获取今天日期, diff=计算日期差, add_days=日期加减')
     date1: str = Field(default=None, description='开始日期 YYYY-MM-DD')
     date2: str = Field(default=None, description='结束日期或天数')
@@ -111,7 +160,14 @@ class GetDateInput(BaseModel):
 
 @tool(args_schema=GetDateInput)
 async def get_date(operation: str, date1: str = None, date2: str = None) -> str:
-    """获取日期信息：查询今天日期、计算两个日期之间的天数和工作日数、日期加减。"""
+    """
+    日期查询和计算
+
+    支持操作：
+    - today: 获取当前日期
+    - diff: 计算两个日期之间的天数和工作日
+    - add_days: 日期加减
+    """
     logger.info('tool:get_date', {'operation': operation, 'date1': date1, 'date2': date2})
     now = datetime.now()
     weekdays = ['一', '二', '三', '四', '五', '六', '日']
@@ -125,6 +181,7 @@ async def get_date(operation: str, date1: str = None, date2: str = None) -> str:
             d2 = datetime.strptime(date2, '%Y-%m-%d')
             diff_days = abs((d2 - d1).days)
             start, end = min(d1, d2), max(d1, d2)
+            # 计算工作日（排除周末）
             workdays = sum(1 for i in range(diff_days + 1)
                           if (start + timedelta(days=i)).weekday() < 5)
             return f'{date1} 到 {date2}：共 {diff_days} 天，其中工作日 {workdays} 天'
@@ -145,6 +202,7 @@ async def get_date(operation: str, date1: str = None, date2: str = None) -> str:
 # ── 工具5：生成并保存报告 ────────────────────────────────────
 
 class WriteReportInput(BaseModel):
+    """报告生成输入参数"""
     title: str = Field(description='报告标题')
     content: str = Field(description='报告正文内容，使用 Markdown 格式')
     format: str = Field(default='markdown', description='输出格式')
@@ -152,7 +210,11 @@ class WriteReportInput(BaseModel):
 
 @tool(args_schema=WriteReportInput)
 async def write_report(title: str, content: str, format: str = 'markdown') -> str:
-    """将分析结果整理成结构化报告并保存。当需要输出最终分析报告时使用。"""
+    """
+    生成结构化分析报告
+
+    输出格式：Markdown，包含标题、生成时间、正文、署名
+    """
     logger.info('tool:write_report', {'title': title, 'format': format})
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     report = f'# {title}\n\n> 生成时间：{timestamp}\n\n{content}\n\n---\n*由 WorkMind AI Agent 自动生成*'
@@ -168,6 +230,7 @@ async def write_report(title: str, content: str, format: str = 'markdown') -> st
 # ── 工具6：发送通知 ──────────────────────────────────────────
 
 class SendNotifyInput(BaseModel):
+    """通知发送输入参数"""
     to: str = Field(description='接收人')
     subject: str = Field(description='消息主题')
     message: str = Field(description='消息正文（简洁）')
@@ -176,7 +239,14 @@ class SendNotifyInput(BaseModel):
 
 @tool(args_schema=SendNotifyInput)
 async def send_notify(to: str, subject: str, message: str, channel: str = 'feishu') -> str:
-    """发送消息通知。可以发送邮件、飞书消息或钉钉消息。用于任务完成后通知相关人员。"""
+    """
+    发送消息通知
+
+    支持渠道：
+    - feishu: 飞书消息
+    - email: 邮件
+    - dingtalk: 钉钉消息
+    """
     logger.info('tool:send_notify', {'to': to, 'subject': subject, 'channel': channel})
     import asyncio
     await asyncio.sleep(0.2)  # 模拟网络延迟
@@ -190,4 +260,5 @@ async def send_notify(to: str, subject: str, message: str, channel: str = 'feish
     }, ensure_ascii=False)
 
 
+# 导出所有工具（Agent 初始化时使用）
 all_tools = [web_search, read_doc, calculate, get_date, write_report, send_notify]
