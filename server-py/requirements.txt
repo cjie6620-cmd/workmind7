@@ -16,3 +16,4 @@ numpy>=1.26
 httpx>=0.27
 python-multipart>=0.0.9
 python-magic>=0.4.27
+redis>=5.0.0

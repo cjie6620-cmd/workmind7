@@ -45,13 +45,10 @@ async def prompt_test_stream(req: dict):
     """
     测试 Prompt 接口
 
-    参数：
-    - systemPrompt: 系统提示词
-    - userMessage: 测试消息
-    - temperature: 温度参数（默认 0.7）
-    - maxTokens: 最大 token 数（默认 1000）
-
-    返回：流式响应 + Token 统计 + 费用估算
+    第一步：校验测试消息，创建独立模型实例
+    第二步：构建消息列表（可选 system prompt + user message）
+    第三步：流式调用模型，实时推送 token
+    第四步：统计 Token 用量，计算费用并返回
     """
     system_prompt = req.get('systemPrompt', '')
     user_message = (req.get('userMessage') or '').strip()
@@ -114,10 +111,9 @@ async def prompt_ab_test(req: dict):
     """
     A/B 测试接口
 
-    对比两个不同 Prompt 的回答效果：
-    1. 同一问题，两个 Prompt 分别生成回答
-    2. 评估两个回答的质量（相关性、准确性、清晰度、简洁性）
-    3. 综合比较，选出更优的 Prompt
+    第一步：同一问题，两个 Prompt 分别生成回答
+    第二步：评估两个回答的质量（相关性、准确性、清晰度、简洁性）
+    第三步：综合比较，选出更优的 Prompt
 
     返回：两个回答 + 评分 + 获胜者
     """

@@ -113,9 +113,10 @@ async def upload_document(request: Request):
     """
     上传文档接口
 
-    支持两种方式：
-    1. 上传文件（.txt/.md/.pdf）- multipart/form-data
-    2. 直接提交文本内容 - application/json
+    第一步：解析请求体（multipart 文件 或 JSON 文本）
+    第二步：校验文件大小、扩展名、内容安全性
+    第三步：写入临时文件，调用 ingest 向量化入库
+    第四步：清理临时文件，返回文档元信息
     """
     file_path = None
     try:
@@ -231,6 +232,14 @@ async def remove_document(doc_id: str):
 
 @knowledge_router.post('/query/stream')
 async def rag_stream(req: dict):
+    """
+    RAG 流式问答接口
+
+    第一步：校验问题内容
+    第二步：检索知识库相关文档
+    第三步：流式生成回答（含来源引用）
+    第四步：推送完成事件
+    """
     question = (req.get('question') or '').strip()
     category = req.get('category')
 

@@ -69,9 +69,10 @@ async def start_workflow_stream(req: dict):
     """
     启动工作流
 
-    参数：
-    - workflowId: 工作流模板 ID
-    - input: 工作流输入数据
+    第一步：校验工作流 ID，生成线程 ID
+    第二步：构建工作流图，监听 LangGraph 事件流
+    第三步：按节点顺序推送状态（node_start → node_done）
+    第四步：检查是否中断（人工审核节点），推送暂停或完成
 
     SSE 事件：
     - start: 工作流开始
@@ -173,11 +174,10 @@ async def resume_workflow_stream(req: dict):
     """
     恢复被中断的工作流
 
-    参数：
-    - threadId: 工作流线程 ID
-    - feedback: 用户反馈（可选）
-
-    用于人工审核节点：用户提供反馈后，工作流继续执行。
+    第一步：校验线程 ID，查找工作流实例
+    第二步：注入用户反馈到工作流状态
+    第三步：重新执行工作流，流式推送节点状态和 token
+    第四步：推送最终结果，清理工作流实例
     """
     thread_id = req.get('threadId')
     feedback = req.get('feedback', '')

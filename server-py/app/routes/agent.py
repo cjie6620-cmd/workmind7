@@ -41,7 +41,9 @@ async def agent_run(req: dict):
     """
     启动 Agent 执行任务
 
-    参数：task - 任务描述（最多 2000 字符）
+    第一步：参数校验（空值、长度、Prompt 注入检测）
+    第二步：创建异步队列，后台启动 Agent 执行任务
+    第三步：SSE 流式推送事件（start → tool_call/tool_result/token → done）
 
     SSE 事件：
     - start: 任务开始

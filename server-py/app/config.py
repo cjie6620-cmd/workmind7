@@ -61,6 +61,12 @@ config = {
     'cache': {
         'ttl': int(_env('CACHE_TTL', '1800000')),  # 毫秒，默认 30 分钟
     },
+    'redis': {
+        'host': _env('REDIS_HOST', 'localhost'),
+        'port': int(_env('REDIS_PORT', '6380')),
+        'password': _env('REDIS_PASSWORD', 'NFTurbo666'),
+        'db': int(_env('REDIS_DB', '0')),
+    },
 }
 
 

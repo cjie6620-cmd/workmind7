@@ -1,39 +1,48 @@
 """
-精确缓存模块
+精确缓存模块（Redis 实现）
 
-实现精确匹配缓存：
-- 相同的 system prompt + message → 返回缓存结果
-- 支持 TTL 过期
-- 支持 LRU 淘汰
-
-缓存策略：
-- Key：MD5(system_prompt + message)
-- TTL：默认 30 分钟（可配置）
-- 上限：500 条，超出后清除最老的 50 条
+利用 Redis 存储 + 原生 LRU 淘汰策略：
+- Key 前缀 cache:，避免与其他业务冲突
+- TTL 由 Redis setex 原生管理
+- 淘汰策略依赖 Redis 配置 maxmemory-policy allkeys-lru
+- 统计信息（hits/misses/saved_tokens）用 Redis Hash 存储
 """
 
 import hashlib
-import time
+import json
 
 from ..config import config
+from ..utils.redis_client import get_redis
+
+
+# 缓存 key 前缀
+_PREFIX = 'cache:'
+# 统计 key
+_STATS_KEY = 'cache:stats'
 
 
 class ExactCache:
     """
-    精确缓存实现
+    精确缓存实现（Redis 版）
 
     用于避免重复调用 LLM API，节省成本和提升响应速度。
-    适用于客服问答等场景，相同问题返回相同答案。
     """
-
-    def __init__(self):
-        self.store = {}  # key -> { content, ts, tokens }
-        self.stats = {'hits': 0, 'misses': 0, 'saved_tokens': 0}
 
     def _key(self, system_prompt, message):
         """生成缓存 key"""
         raw = f'{system_prompt or ""}||{message}'
-        return hashlib.md5(raw.encode()).hexdigest()
+        return f'{_PREFIX}{hashlib.md5(raw.encode()).hexdigest()}'
+
+    def _ttl_seconds(self):
+        """TTL 毫秒转秒"""
+        return config['cache']['ttl'] // 1000
+
+    def _incr_stat(self, field, amount=1):
+        """原子递增统计字段"""
+        try:
+            get_redis().hincrby(_STATS_KEY, field, amount)
+        except Exception:
+            pass
 
     def get(self, system_prompt, message):
         """
@@ -42,51 +51,60 @@ class ExactCache:
         返回：缓存内容或 None（未命中或已过期）
         """
         k = self._key(system_prompt, message)
-        entry = self.store.get(k)
+        try:
+            raw = get_redis().get(k)
+        except Exception:
+            raw = None
 
-        if not entry:
-            self.stats['misses'] += 1
+        if not raw:
+            self._incr_stat('misses')
             return None
 
-        # TTL 过期检查（config 里是毫秒，转为秒）
-        if time.time() - entry['ts'] > config['cache']['ttl'] / 1000:
-            del self.store[k]
-            self.stats['misses'] += 1
-            return None
-
-        self.stats['hits'] += 1
-        self.stats['saved_tokens'] += entry.get('tokens', 0)
+        self._incr_stat('hits')
+        entry = json.loads(raw)
+        self._incr_stat('saved_tokens', entry.get('tokens', 0))
         return entry
 
     def set(self, system_prompt, message, data):
-        """设置缓存"""
+        """设置缓存，TTL 由 Redis setex 原生管理"""
         k = self._key(system_prompt, message)
-        self.store[k] = {
+        entry = {
             'content': data['content'],
             'tokens': data.get('tokens', 0),
-            'ts': time.time(),
         }
-
-        # LRU 淘汰：超过 500 条时清除最老的 50 条
-        if len(self.store) > 500:
-            sorted_keys = sorted(self.store.items(), key=lambda x: x[1]['ts'])
-            for old_k, _ in sorted_keys[:50]:
-                del self.store[old_k]
+        try:
+            get_redis().setex(k, self._ttl_seconds(), json.dumps(entry, ensure_ascii=False))
+        except Exception:
+            pass
 
     @property
     def hit_rate(self):
         """计算缓存命中率"""
-        total = self.stats['hits'] + self.stats['misses']
-        return f"{self.stats['hits'] / total * 100:.1f}%" if total else '0%'
+        try:
+            stats = get_redis().hgetall(_STATS_KEY)
+        except Exception:
+            return '0%'
+        hits = int(stats.get('hits', 0))
+        misses = int(stats.get('misses', 0))
+        total = hits + misses
+        return f'{hits / total * 100:.1f}%' if total else '0%'
 
     def get_stats(self):
         """获取缓存统计"""
+        try:
+            r = get_redis()
+            stats = r.hgetall(_STATS_KEY)
+            size = sum(1 for _ in r.scan_iter(match=f'{_PREFIX}*'))
+        except Exception:
+            stats = {}
+            size = 0
+
         return {
-            'size': len(self.store),
-            'hits': self.stats['hits'],
-            'misses': self.stats['misses'],
+            'size': size,
+            'hits': int(stats.get('hits', 0)),
+            'misses': int(stats.get('misses', 0)),
             'hitRate': self.hit_rate,
-            'savedTokens': self.stats['saved_tokens'],
+            'savedTokens': int(stats.get('saved_tokens', 0)),
         }
 
 

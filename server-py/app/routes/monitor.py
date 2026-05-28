@@ -124,13 +124,10 @@ async def get_stats():
     """
     获取详细统计信息
 
-    返回：
-    - overview: 概览（调用量、Token、费用、缓存命中率、预算使用率）
-    - latency: 延迟统计（P50/P90/P99/平均）
-    - byFeature: 按功能模块统计
-    - last7Days: 近7天趋势
-    - recentCalls: 最近 50 条记录
-    - cacheStats: 缓存统计
+    第一步：筛选今日调用记录
+    第二步：统计调用量、Token、费用、延迟（P50/P90/P99）
+    第三步：计算缓存命中率、预算使用率
+    第四步：聚合按模块统计、近7天趋势、最近调用记录
     """
     today_str = date.today().isoformat()
     today_calls = [c for c in _calls if c['time'][:10] == today_str]
