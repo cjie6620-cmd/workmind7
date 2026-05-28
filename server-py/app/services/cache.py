@@ -12,7 +12,7 @@ import hashlib
 import json
 
 from ..config import config
-from ..utils.redis_client import get_redis
+from ..core.redis_client import get_redis
 
 
 # 缓存 key 前缀
