@@ -13,7 +13,7 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
 from ..model import create_chat_model
-from ...utils.json_extract import extract_json
+from ...utils.llm_parse import parse_with_retry
 
 model = create_chat_model(temperature=0)
 
@@ -45,6 +45,7 @@ _EXPENSE_SCHEMA = """返回纯 JSON，格式：
 {"type": "travel"|"meal"|"office"|"training"|"other", "items": [{"name": str, "amount": float, "date": str|null, "note": str|null}], "total_amount": float, "reason": str, "dept": str|null, "warnings": [str]}"""
 
 
+
 async def parse_expense_form(text):
     """
     解析报销申请
@@ -56,7 +57,7 @@ async def parse_expense_form(text):
     - 报销事由
     """
     today = datetime.now().strftime('%Y-%m-%d')
-    resp = await model.ainvoke([
+    messages = [
         {'role': 'system', 'content': f"""你是报销单填写助手。从用户的自然语言描述中提取报销信息，生成结构化表单。
 今天是 {today}。
 规则：
@@ -68,8 +69,8 @@ async def parse_expense_form(text):
 
 {_EXPENSE_SCHEMA}"""},
         {'role': 'user', 'content': text},
-    ])
-    return ExpenseForm(**extract_json(resp.content))
+    ]
+    return await parse_with_retry(model, messages, ExpenseForm)
 
 
 # ── 请假申请 ────────────────────────────────────────────────
@@ -121,7 +122,7 @@ async def parse_leave_form(text):
     - 请假原因
     """
     today = datetime.now().strftime('%Y-%m-%d')
-    resp = await model.ainvoke([
+    messages = [
         {'role': 'system', 'content': f"""你是请假申请助手。从用户的自然语言描述中提取请假信息。
 今天是 {today}。
 规则：
@@ -133,49 +134,11 @@ async def parse_leave_form(text):
 
 {_LEAVE_SCHEMA}"""},
         {'role': 'user', 'content': text},
-    ])
-    result = LeaveForm(**extract_json(resp.content))
+    ]
+    result = await parse_with_retry(model, messages, LeaveForm)
 
     # 重新计算工作日数（更精确）
     if result.start_date and result.end_date:
         result.workdays = _count_workdays(result.start_date, result.end_date)
 
     return result
-
-
-# ── 合规检查 ────────────────────────────────────────────────
-
-# 报销规则：各类费用的单笔限额
-EXPENSE_RULES = {
-    'travel': {'hotel_per_night': 800, 'meal_per_day': 200, 'flight_economy': True, 'max_single_item': 5000},
-    'meal': {'max_single_item': 500},
-    'office': {'max_single_item': 1000},
-    'training': {'max_single_item': 10000},
-    'other': {'max_single_item': 2000},
-}
-
-
-def check_compliance(expense_form):
-    """
-    报销合规检查
-
-    检查项：
-    - 单笔金额是否超标
-    - 住宿费是否超标
-
-    返回：警告信息列表
-    """
-    alerts = []
-    rules = EXPENSE_RULES.get(expense_form.type, EXPENSE_RULES['other'])
-
-    for item in expense_form.items:
-        # 单笔限额检查
-        if item.amount > rules['max_single_item']:
-            alerts.append(f'"{item.name}" ¥{item.amount} 超过单笔限额 ¥{rules["max_single_item"]}，需要额外说明')
-
-        # 差旅住宿费检查
-        if expense_form.type == 'travel' and '住宿' in item.name:
-            if item.amount > rules.get('hotel_per_night', 800) * 3:
-                alerts.append(f'住宿费用偏高，每晚标准为 ¥{rules["hotel_per_night"]}')
-
-    return alerts

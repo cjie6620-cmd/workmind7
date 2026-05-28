@@ -6,13 +6,13 @@ ERP 服务模块
 - approval: Multi-Agent 审批流程
 """
 
-from .parser import parse_expense_form, parse_leave_form, check_compliance
+from .parser import parse_expense_form, parse_leave_form
 from .approval import run_approval_flow, APPROVAL_ROLES
 
 __all__ = [
     'parse_expense_form',
     'parse_leave_form',
-    'check_compliance',
+
     'run_approval_flow',
     'APPROVAL_ROLES',
 ]

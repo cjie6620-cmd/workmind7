@@ -65,38 +65,38 @@ export const useAgentStore = defineStore('agent', () => {
       duration:  0,
     }
 
+    // unshift 后获取 Vue Proxy 包装后的响应式对象
     tasks.value.unshift(task)
-    currentTask.value = task
+    const rt = tasks.value[0]
+    currentTask.value = rt
 
     await fetchStream(
       '/api/agent/run',
       { task: taskText },
       {
         onToken: (token) => {
-          task.answer += token
+          rt.answer += token
         },
 
         onEvent: (event, data) => {
           if (event === 'start') {
-            task.status = 'running'
+            rt.status = 'running'
           }
 
-          // 工具被调用：记录步骤
           if (event === 'tool_call') {
-            task.steps.push({
-              id:       task.steps.length + 1,
+            rt.steps.push({
+              id:       rt.steps.length + 1,
               toolName: data.toolName,
               label:    data.label,
               args:     data.args,
               result:   null,
-              status:   'running',   // running | done
+              status:   'running',
               startMs:  Date.now(),
             })
           }
 
-          // 工具执行完毕：更新最后一个 running 步骤
           if (event === 'tool_result') {
-            const step = [...task.steps].reverse().find(s => s.toolName === data.toolName && s.status === 'running')
+            const step = [...rt.steps].reverse().find(s => s.toolName === data.toolName && s.status === 'running')
             if (step) {
               step.result    = data.resultText
               step.status    = 'done'
@@ -105,28 +105,28 @@ export const useAgentStore = defineStore('agent', () => {
           }
 
           if (event === 'done') {
-            task.status   = 'done'
-            task.duration = Date.now() - startTime
+            rt.status   = 'done'
+            rt.duration = Date.now() - startTime
             currentTask.value = null
           }
 
           if (event === 'error') {
-            task.status = 'error'
-            task.answer = task.answer || data.message || '任务执行失败'
+            rt.status = 'error'
+            rt.answer = rt.answer || data.message || '任务执行失败'
             currentTask.value = null
             appStore.toast.error(data.message || '执行出错')
           }
         },
 
         onDone: () => {
-          task.status   = 'done'
-          task.duration = Date.now() - startTime
+          rt.status   = 'done'
+          rt.duration = Date.now() - startTime
           currentTask.value = null
         },
 
         onError: (err) => {
-          task.status = 'error'
-          task.answer = task.answer || '网络错误，请重试'
+          rt.status = 'error'
+          rt.answer = rt.answer || '网络错误，请重试'
           currentTask.value = null
           appStore.toast.error(err.message)
         },

@@ -7,16 +7,20 @@
 3. 请求日志：记录每个请求的方法、路径、状态码、耗时、traceId
 4. Prompt 注入检测：防止恶意提示词注入攻击
 5. 输入校验：使用 Pydantic 模型验证请求参数
+
+注意：使用纯 ASGI 中间件（StreamingSafeMiddleware）替代 BaseHTTPMiddleware，
+避免对流式响应（SSE）的缓冲。
 """
 
 import re
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import config
 
@@ -95,6 +99,74 @@ def check_injection(message: str) -> bool:
 
 # ── 中间件注册 ───────────────────────────────────────────────
 
+SSE_PATHS = {'/api/agent/run'}
+
+
+class StreamingSafeMiddleware:
+    """
+    纯 ASGI 中间件，不会缓冲流式响应。
+
+    替代 BaseHTTPMiddleware（@app.middleware('http')），
+    后者的 call_next() 会把整个响应体读进内存，导致 SSE 事件全部缓冲后一次性返回。
+    本中间件直接操作 scope/receive/send，对 send 做轻量包装，
+    数据直接流向客户端，不经过任何内存缓冲。
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get('path', '')
+
+        # 从请求头提取 traceId
+        raw_headers = dict(scope.get('headers', []))
+        trace_id = raw_headers.get(b'x-trace-id', str(uuid.uuid4()).encode()).decode()
+
+        # 限流检查
+        if not _bucket.consume():
+            resp = JSONResponse(
+                status_code=429,
+                content={'error': {'code': 'RATE_LIMIT', 'message': '请求太频繁，请稍后重试'}},
+            )
+            await resp(scope, receive, send)
+            return
+
+        # SSE 路径：限流 + traceId，直接透传不缓冲
+        if path in SSE_PATHS:
+            async def send_sse(message):
+                if message['type'] == 'http.response.start':
+                    headers = list(message.get('headers', []))
+                    headers.append((b'x-trace-id', trace_id.encode()))
+                    message['headers'] = headers
+                await send(message)
+            await self.app(scope, receive, send_sse)
+            return
+
+        # 普通路径：限流 + traceId + 计时 + 日志
+        start = time.time()
+        status_code = 0
+
+        async def send_with_log(message):
+            nonlocal status_code
+            if message['type'] == 'http.response.start':
+                status_code = message.get('status', 0)
+                headers = list(message.get('headers', []))
+                headers.append((b'x-trace-id', trace_id.encode()))
+                message['headers'] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_log)
+
+        ms = round((time.time() - start) * 1000, 1)
+        method = scope.get('method', '?')
+        level = 'ERROR' if status_code >= 500 else ('WARN' if status_code >= 400 else 'INFO')
+        print(f'[{level}] {method} {path} {status_code} {ms}ms [{trace_id[:8]}]')
+
+
 def setup_middleware(app: FastAPI):
     """注册所有中间件到 FastAPI 应用"""
 
@@ -107,31 +179,5 @@ def setup_middleware(app: FastAPI):
         allow_headers=['*'],
     )
 
-    @app.middleware('http')
-    async def combined_middleware(request: Request, call_next):
-        """组合中间件：限流 → 记录 traceId → 请求日志"""
-
-        # 限流检查
-        if not _bucket.consume():
-            return JSONResponse(
-                status_code=429,
-                content={'error': {'code': 'RATE_LIMIT', 'message': '请求太频繁，请稍后重试'}},
-            )
-
-        # 提取或生成 traceId，用于请求链路追踪
-        trace_id = request.headers.get('x-trace-id', str(uuid.uuid4()))
-        request.state.trace_id = trace_id
-
-        # 记录请求耗时
-        start = time.time()
-        response = await call_next(request)
-        ms = round((time.time() - start) * 1000, 1)
-
-        # 根据状态码选择日志级别
-        status = response.status_code
-        level = 'ERROR' if status >= 500 else ('WARN' if status >= 400 else 'INFO')
-        print(f'[{level}] {request.method} {request.url.path} {status} {ms}ms [{trace_id[:8]}]')
-
-        # 将 traceId 透传给客户端
-        response.headers['X-Trace-Id'] = trace_id
-        return response
+    # 纯 ASGI 中间件：限流 + traceId + 日志（不缓冲流式响应）
+    app.add_middleware(StreamingSafeMiddleware)

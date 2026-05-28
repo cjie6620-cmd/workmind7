@@ -53,7 +53,11 @@ http.interceptors.response.use(
 // onError：出错时的回调
 export async function fetchStream(url, body, { onToken, onEvent, onDone, onError } = {}) {
   try {
-    const response = await fetch(url, {
+    // 开发模式直连后端，绕过 Vite 代理对 SSE 的缓冲
+    const fetchUrl = import.meta.env.DEV
+      ? url.replace('/api', 'http://localhost:3000/api')
+      : url
+    const response = await fetch(fetchUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

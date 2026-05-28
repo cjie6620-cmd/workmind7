@@ -46,8 +46,8 @@ cd server-py
 # 安装依赖（uv 自动管理虚拟环境）
 uv pip install -r requirements.txt
 
-# 启动服务
-uv run uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
+# 启动服务（使用项目虚拟环境中的 Python，避免全局 app 包冲突）
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
 # 服务启动在 http://localhost:3000
 # API 文档：http://localhost:3000/docs
 ```

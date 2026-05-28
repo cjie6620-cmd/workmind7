@@ -18,7 +18,7 @@ from typing import Optional, List, Literal
 
 from ..model import get_chat_model
 from ...utils.logger import logger
-from ...utils.json_extract import extract_json
+from ...utils.llm_parse import parse_with_retry
 
 
 # ── Token 估算 ──────────────────────────────────────────────
@@ -168,12 +168,15 @@ async def extract_and_update_profile(user_id, user_msg, ai_reply):
 返回纯 JSON，格式：
 {{"has_info": bool, "name": str|null, "dept": str|null, "tech_level": "初级"|"中级"|"高级"|"架构师"|null, "primary_stack": [str]|null, "current_goal": str|null, "prefers_short": bool|null, "prefers_code": bool|null}}"""
 
-        resp = await get_chat_model().ainvoke([
-            {'role': 'system', 'content': prompt},
-            {'role': 'user', 'content': f'用户说：{user_msg}\nAI回复：{ai_reply[:200]}'},
-        ])
-
-        data = extract_json(resp.content)
+        form = await parse_with_retry(
+            get_chat_model(),
+            [
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': f'用户说：{user_msg}\nAI回复：{ai_reply[:200]}'},
+            ],
+            UserProfile,
+        )
+        data = form.model_dump()
 
         if not data.get('has_info'):
             return

@@ -23,10 +23,11 @@ from datetime import datetime
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..services.erp.parser import parse_expense_form, parse_leave_form, check_compliance
+from ..services.erp.parser import parse_expense_form, parse_leave_form
 from ..services.erp.approval import run_approval_flow, APPROVAL_ROLES
 from ..utils.errors import send_sse_error
 from ..utils.logger import logger
+from pydantic import ValidationError
 
 erp_router = APIRouter()
 
@@ -44,10 +45,7 @@ async def erp_parse(req: dict):
     """
     表单解析接口
 
-    第一步：校验输入（文本、表单类型）
-    第二步：调用解析器（报销/请假）提取结构化字段
-    第三步：合规检查（报销限额等），补充警告
-    第四步：返回表单数据
+    校验输入 → 调用解析器提取结构化字段 → 返回表单数据
     """
     text = (req.get('text') or '').strip()
     form_type = req.get('formType')
@@ -60,15 +58,17 @@ async def erp_parse(req: dict):
     try:
         if form_type == 'expense':
             form = await parse_expense_form(text)
-            # 合规检查，补充警告信息
-            alerts = check_compliance(form)
-            form.warnings = list(form.warnings) + alerts
         else:
             form = await parse_leave_form(text)
 
-        # Pydantic model → dict
-        form_dict = form.model_dump(by_alias=False)
+        form_dict = form.model_dump(exclude={'warnings'})
         return {'success': True, 'form': form_dict, 'formType': form_type}
+    except ValueError as err:
+        logger.error('erp: json parse error', {'error': str(err)})
+        return JSONResponse(status_code=422, content={'error': {'message': '无法识别表单内容，请调整描述后重试'}})
+    except ValidationError as err:
+        logger.error('erp: validation error', {'error': str(err)})
+        return JSONResponse(status_code=422, content={'error': {'message': '表单格式异常，请调整描述后重试'}})
     except Exception as err:
         logger.error('erp: parse error', {'error': str(err)})
         return JSONResponse(status_code=500, content={'error': {'message': '解析失败，请检查输入内容'}})

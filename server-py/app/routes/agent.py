@@ -75,7 +75,7 @@ async def agent_run(req: dict):
         try:
             await run_agent(task, collect_event)
         except Exception as err:
-            logger.error('agent route error', {'error': str(err)})
+            logger.error('agent route: task failed', {'error': str(err)})
             await queue.put(send_sse_error(err))
         finally:
             done_event.set()
@@ -97,7 +97,11 @@ async def agent_run(req: dict):
     return StreamingResponse(
         event_generator(),
         media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+        headers={
+            'Cache-Control': 'no-cache, no-transform',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
     )
 
 
@@ -142,3 +146,49 @@ async def agent_examples():
             },
         ]
     }
+
+
+# ── 报告管理 ─────────────────────────────────────────────────
+
+@agent_router.get('/reports')
+async def agent_reports():
+    """列出 Agent 生成的所有报告（仅元数据）"""
+    from ..services.agent.report_store import list_reports
+    return {'reports': list_reports()}
+
+
+@agent_router.get('/reports/{report_id}')
+async def agent_report_detail(report_id: str):
+    """获取单个报告的完整内容"""
+    from ..services.agent.report_store import get_report
+    report = get_report(report_id)
+    if not report:
+        return JSONResponse(status_code=404, content={'error': {'message': '报告不存在或已过期'}})
+    return {'report': report}
+
+
+@agent_router.get('/reports/{report_id}/download')
+async def agent_report_download(report_id: str):
+    """下载报告为 Markdown 文件"""
+    from ..services.agent.report_store import get_report
+    from fastapi.responses import Response
+    report = get_report(report_id)
+    if not report:
+        return JSONResponse(status_code=404, content={'error': {'message': '报告不存在或已过期'}})
+    title = report['meta']['title']
+    content = report['content']
+    return Response(
+        content=content.encode('utf-8'),
+        media_type='text/markdown; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{title}.md"'.encode('utf-8')},
+    )
+
+
+@agent_router.delete('/reports/{report_id}')
+async def agent_report_delete(report_id: str):
+    """删除报告"""
+    from ..services.agent.report_store import delete_report
+    ok = delete_report(report_id)
+    if not ok:
+        return JSONResponse(status_code=500, content={'error': {'message': '删除失败'}})
+    return {'success': True}

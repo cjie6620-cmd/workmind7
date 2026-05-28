@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from ..model import create_chat_model
-from ...utils.json_extract import extract_json
+from ...utils.llm_parse import parse_with_retry
 
 score_model = create_chat_model(temperature=0)
 
@@ -135,9 +135,21 @@ def delete_template(template_id):
 
 # ── A/B 评分 ────────────────────────────────────────────────
 
-async def _parse_json_response(resp):
-    """解析 JSON 响应"""
-    return extract_json(resp.content)
+class ScoreResult(BaseModel):
+    """单个回答评分结果"""
+    relevance: int
+    accuracy: int
+    clarity: int
+    conciseness: int
+    overall: int
+    winner: Literal['A', 'B', 'tie']
+    reason: str
+
+
+class CompareResult(BaseModel):
+    """A/B 比较结果"""
+    winner: Literal['A', 'B', 'tie']
+    reason: str
 
 
 async def score_ab_test(question, answer_a, answer_b):
@@ -162,39 +174,41 @@ async def score_ab_test(question, answer_a, answer_b):
 {"relevance": int, "accuracy": int, "clarity": int, "conciseness": int, "overall": int, "winner": "A"|"B"|"tie", "reason": str}"""
 
     # 并行评估两个回答
-    resp_a, resp_b = await score_model.ainvoke([
-        SystemMessage(eval_prompt),
-        HumanMessage(f'问题：{question}\n\n回答：{answer_a}'),
-    ]), await score_model.ainvoke([
-        SystemMessage(eval_prompt),
-        HumanMessage(f'问题：{question}\n\n回答：{answer_b}'),
-    ])
-
-    eval_a = await _parse_json_response(resp_a)
-    eval_b = await _parse_json_response(resp_b)
+    eval_a, eval_b = await parse_with_retry(
+        score_model,
+        [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_a}')],
+        ScoreResult,
+    ), await parse_with_retry(
+        score_model,
+        [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_b}')],
+        ScoreResult,
+    )
 
     # 综合比较
     compare_prompt = """比较两个回答，选出更好的那个。评分相差0.5分以内视为平局。
 返回纯 JSON：
 {"winner": "A"|"B"|"tie", "reason": str}"""
 
-    comparison_resp = await score_model.ainvoke([
-        SystemMessage(compare_prompt),
-        HumanMessage(f"""问题：{question}
+    comparison = await parse_with_retry(
+        score_model,
+        [
+            SystemMessage(compare_prompt),
+            HumanMessage(f"""问题：{question}
 
 回答A：{answer_a}
-A的评分：相关性{eval_a['relevance']} 准确性{eval_a['accuracy']} 清晰度{eval_a['clarity']} 简洁性{eval_a['conciseness']} 综合{eval_a['overall']}
+A的评分：相关性{eval_a.relevance} 准确性{eval_a.accuracy} 清晰度{eval_a.clarity} 简洁性{eval_a.conciseness} 综合{eval_a.overall}
 
 回答B：{answer_b}
-B的评分：相关性{eval_b['relevance']} 准确性{eval_b['accuracy']} 清晰度{eval_b['clarity']} 简洁性{eval_b['conciseness']} 综合{eval_b['overall']}
+B的评分：相关性{eval_b.relevance} 准确性{eval_b.accuracy} 清晰度{eval_b.clarity} 简洁性{eval_b.conciseness} 综合{eval_b.overall}
 
 哪个回答更好？"""),
-    ])
-    comparison = await _parse_json_response(comparison_resp)
+        ],
+        CompareResult,
+    )
 
     return {
-        'scoreA': eval_a,
-        'scoreB': eval_b,
-        'winner': comparison['winner'],
-        'reason': comparison['reason'],
+        'scoreA': eval_a.model_dump(),
+        'scoreB': eval_b.model_dump(),
+        'winner': comparison.winner,
+        'reason': comparison.reason,
     }

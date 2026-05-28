@@ -109,6 +109,8 @@ async def start_workflow_stream(req: dict):
                 event_type = event['event']
                 name = event.get('name', '')
                 data = event.get('data', {})
+                if not isinstance(data, dict):
+                    data = {}
 
                 # 节点开始执行
                 if event_type == 'on_chain_start' and name not in ('__start__', 'LangGraph'):
@@ -121,7 +123,7 @@ async def start_workflow_stream(req: dict):
                 if event_type == 'on_chain_end' and name not in ('__end__', 'LangGraph'):
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)
                     if node_in_meta:
-                        output = event.get('data', {}).get('output', {})
+                        output = data.get('output', {})
                         # 提取输出预览（前80字符）
                         preview = ''
                         if isinstance(output, dict):
@@ -205,6 +207,9 @@ async def resume_workflow_stream(req: dict):
             async for event in graph.astream_events(None, config=wf_config, version='v2'):
                 event_type = event['event']
                 name = event.get('name', '')
+                data = event.get('data', {})
+                if not isinstance(data, dict):
+                    data = {}
 
                 if event_type == 'on_chain_start' and name not in ('__end__', 'LangGraph'):
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)
@@ -213,9 +218,9 @@ async def resume_workflow_stream(req: dict):
                         await queue.put(sse('node_start', {'nodeId': name, 'label': node_in_meta['label']}))
 
                 if event_type == 'on_chat_model_stream':
-                    chunk = event.get('data', {}).get('chunk', {})
-                    if chunk.get('content'):
-                        await queue.put(sse('token', {'token': chunk['content']}))
+                    chunk = data.get('chunk')
+                    if chunk and chunk.content:
+                        await queue.put(sse('token', {'token': chunk.content}))
 
                 if event_type == 'on_chain_end':
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)

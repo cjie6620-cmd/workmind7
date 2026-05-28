@@ -44,13 +44,6 @@
         <span class="form-badge">AI 自动填写</span>
       </div>
 
-      <!-- 警告提示 -->
-      <div v-if="erpStore.parsedForm.warnings?.length" class="warnings">
-        <div v-for="w in erpStore.parsedForm.warnings" :key="w" class="warning-item">
-          {{ w }}
-        </div>
-      </div>
-
       <!-- 基本信息 -->
       <div class="form-grid">
         <FormField label="费用类型" :value="expenseTypeLabel" />
@@ -91,12 +84,6 @@
       <div class="form-title">
         <span>请假申请单</span>
         <span class="form-badge">AI 自动填写</span>
-      </div>
-
-      <div v-if="erpStore.parsedForm.warnings?.length" class="warnings">
-        <div v-for="w in erpStore.parsedForm.warnings" :key="w" class="warning-item">
-          {{ w }}
-        </div>
       </div>
 
       <div class="form-grid">
@@ -224,10 +211,6 @@ export default { components: { FormField } }
   background: var(--color-primary-bg); color: var(--color-primary);
   border-radius: var(--radius-full);
 }
-
-/* 警告 */
-.warnings { padding: 10px 20px; background: #fffbeb; border-bottom: 1px solid #fde68a; }
-.warning-item { font-size: 12px; color: #92400e; padding: 2px 0; }
 
 /* 表单字段网格 */
 .form-grid {

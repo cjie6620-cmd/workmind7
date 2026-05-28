@@ -35,7 +35,7 @@ class SearchInput(BaseModel):
 @tool(args_schema=SearchInput)
 async def web_search(query: str) -> str:
     """
-    搜索互联网获取最新技术资讯
+    搜索互联网获取最新技术资讯（MOCK - 返回预置结果）
 
     使用场景：
     - 了解某个技术的最新版本和特性
@@ -44,7 +44,7 @@ async def web_search(query: str) -> str:
     """
     logger.info('tool:search', {'query': query})
 
-    # 预置搜索结果（实际项目中应接入真实搜索 API）
+    # TODO: 接入真实搜索 API（SearXNG / Bing Web Search / Tavily）
     mock_results = {
         'Vue3': 'Vue 3.4.21 是目前最新版本，于2024年3月发布。主要改进：defineModel() 正式稳定，响应式系统性能提升约 56%。',
         'React': 'React 18.3 是最新稳定版，引入了并发渲染、useTransition、Suspense 改进。',
@@ -211,19 +211,26 @@ class WriteReportInput(BaseModel):
 @tool(args_schema=WriteReportInput)
 async def write_report(title: str, content: str, format: str = 'markdown') -> str:
     """
-    生成结构化分析报告
+    生成结构化分析报告并保存
 
     输出格式：Markdown，包含标题、生成时间、正文、署名
+    报告将保存到 Redis，可通过报告页面查看和下载
     """
     logger.info('tool:write_report', {'title': title, 'format': format})
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     report = f'# {title}\n\n> 生成时间：{timestamp}\n\n{content}\n\n---\n*由 WorkMind AI Agent 自动生成*'
+
+    # 持久化保存（Redis 不可用时仅影响列表查询，不影响工具返回）
+    from .report_store import save_report
+    meta = save_report(title, report)
+
     return json.dumps({
         'success': True,
+        'reportId': meta['id'],
         'title': title,
         'content': report,
         'savedAt': timestamp,
-        'message': f'报告「{title}」已生成，共 {len(report)} 字',
+        'message': f'报告「{title}」已生成并保存，共 {len(report)} 字',
     }, ensure_ascii=False)
 
 
@@ -240,7 +247,7 @@ class SendNotifyInput(BaseModel):
 @tool(args_schema=SendNotifyInput)
 async def send_notify(to: str, subject: str, message: str, channel: str = 'feishu') -> str:
     """
-    发送消息通知
+    发送消息通知（MOCK - 模拟发送，不实际投递）
 
     支持渠道：
     - feishu: 飞书消息
@@ -248,6 +255,7 @@ async def send_notify(to: str, subject: str, message: str, channel: str = 'feish
     - dingtalk: 钉钉消息
     """
     logger.info('tool:send_notify', {'to': to, 'subject': subject, 'channel': channel})
+    # TODO: 接入实际通知渠道 SDK
     import asyncio
     await asyncio.sleep(0.2)  # 模拟网络延迟
     return json.dumps({

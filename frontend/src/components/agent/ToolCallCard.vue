@@ -1,7 +1,7 @@
 <!-- frontend/src/components/agent/ToolCallCard.vue -->
 <!-- 单次工具调用卡片：工具名、入参、出参、执行时间、状态 -->
 <template>
-  <div class="tool-card" :class="step.status">
+  <div class="tool-card" :class="[step.status, { report: isReport }]">
     <!-- 卡片头部 -->
     <div class="card-header" @click="toggle">
       <div class="left">
@@ -32,8 +32,21 @@
           <pre class="code-block args">{{ argsText }}</pre>
         </div>
 
-        <!-- 出参（工具执行结果） -->
-        <div v-if="step.result" class="detail-section">
+        <!-- 报告特殊展示 -->
+        <div v-if="isReport" class="detail-section report-section">
+          <div class="section-header">
+            <span class="section-label report-badge">报告已生成</span>
+            <button class="btn-download" @click="downloadReport">下载 .md</button>
+          </div>
+          <div class="report-preview">
+            <div class="report-title">{{ step.report.title }}</div>
+            <div class="report-body markdown-body" :class="{ collapsed: !showFullReport }" v-html="renderMd(step.report.content)" />
+            <button v-if="!showFullReport" class="btn-expand-report" @click="showFullReport = true">展开完整报告 ▾</button>
+          </div>
+        </div>
+
+        <!-- 出参（非报告工具的执行结果） -->
+        <div v-else-if="step.result" class="detail-section">
           <div class="section-label">执行结果</div>
           <pre class="code-block result">{{ resultText }}</pre>
         </div>
@@ -49,13 +62,24 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { marked } from 'marked'
+import hljs from 'highlight.js'
 
 const props = defineProps({
   step: { type: Object, required: true },
 })
 
-const expanded = ref(true)   // 默认展开，完成后可折叠
+const expanded = ref(false)
+
+watch(() => props.step.status, (s) => { if (s === 'running') expanded.value = true })
+
+const showFullReport = ref(false)
+
+marked.setOptions({
+  highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : c,
+  breaks: true,
+})
 
 function toggle() {
   if (props.step.status !== 'running') {
@@ -63,13 +87,29 @@ function toggle() {
   }
 }
 
+function renderMd(t) {
+  try { return marked(t || '') } catch { return t }
+}
+
+function downloadReport() {
+  const r = props.step.report
+  const blob = new Blob([r.content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${r.title}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const isReport = computed(() => !!props.step.report)
+
 const statusText = computed(() => ({
   running: '执行中',
   done:    '完成',
   error:   '失败',
 }[props.step.status] || props.step.status))
 
-// 格式化入参为可读文本
 const argsText = computed(() => {
   const args = props.step.args
   if (!args) return ''
@@ -81,12 +121,10 @@ const argsText = computed(() => {
   }
 })
 
-// 格式化出参
 const resultText = computed(() => {
   const r = props.step.result
   if (!r) return ''
   if (typeof r === 'string') {
-    // 尝试 pretty print JSON
     try {
       return JSON.stringify(JSON.parse(r), null, 2)
     } catch {
@@ -241,4 +279,112 @@ const resultText = computed(() => {
   max-height: 500px;
   opacity: 1;
 }
+
+/* 报告卡片样式 */
+.tool-card.report {
+  border-color: #c4b5fd;
+  background: #f5f3ff;
+}
+
+.report-section {
+  background: #faf5ff;
+  border: 1px solid #e9d5ff;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.report-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 2px 10px;
+  background: #8b5cf6;
+  color: #fff;
+  border-radius: var(--radius-full);
+}
+
+.btn-download {
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #8b5cf6;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.btn-download:hover { background: #7c3aed; }
+
+.report-preview {
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-light);
+}
+
+.report-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e9d5ff;
+}
+
+.report-body {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-text);
+}
+
+.report-body.collapsed {
+  max-height: 200px;
+  overflow: hidden;
+  position: relative;
+}
+.report-body.collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, #fff);
+}
+
+.btn-expand-report {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 0;
+  font-size: 11px;
+  color: #8b5cf6;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn-expand-report:hover { color: #7c3aed; }
+
+/* 标记正文内的 markdown 样式 */
+.markdown-body h1 { font-size: 16px; margin: 8px 0 4px; }
+.markdown-body h2 { font-size: 14px; margin: 6px 0 4px; }
+.markdown-body p  { margin: 4px 0; }
+.markdown-body blockquote { border-left: 3px solid #e9d5ff; padding-left: 10px; color: var(--color-text-muted); margin: 6px 0; }
+.markdown-body hr { border: none; border-top: 1px solid #e9d5ff; margin: 8px 0; }
+.markdown-body code { background: #f5f3ff; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.markdown-body pre { background: #1e1b4b; color: #e0e7ff; padding: 8px 12px; border-radius: var(--radius-md); overflow-x: auto; font-size: 12px; }
+.markdown-body pre code { background: none; padding: 0; }
 </style>
