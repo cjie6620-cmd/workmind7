@@ -12,6 +12,9 @@ server-py/.venv/
 # Env
 .env
 .env.local
+.env.*
+server-py/.env
+server-py/.env.*
 
 # Node (frontend)
 node_modules/
