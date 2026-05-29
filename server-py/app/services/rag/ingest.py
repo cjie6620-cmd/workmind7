@@ -6,13 +6,12 @@ RAG 文档入库模块
 2. 提取文本（支持 .txt/.md/.pdf）
 3. 文本分片（RecursiveCharacterTextSplitter）
 4. 向量化（本地 sentence-transformers）
-5. 存入向量库（内存向量库）
-6. 更新文档注册表
-7. 清理临时文件
+5. 存入 PostgreSQL + pgvector
+6. 清理临时文件
+7. 文档元信息持久化到 documents 表
 """
 
 import asyncio
-import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -20,100 +19,36 @@ from datetime import datetime, timezone
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..model import get_embeddings
+from .pgvector_store import get_vector_store
+from ...core.database import async_session_factory
+from ...models.entities import RagChunk, Document
 from ...utils.logger import logger
 
 # 分片上限
 MAX_CHUNKS = 300
 
+# ── 文档注册表（从数据库加载）─────────────────────────────
 
-# ── 轻量内存向量库 ──────────────────────────────────────────
+_doc_registry: dict = {}
 
-class MemoryVectorStore:
-    """
-    内存向量库
+async def load_doc_registry():
+    """从数据库加载文档注册表"""
+    from sqlalchemy import select
+    async with async_session_factory() as session:
+        result = await session.execute(select(Document))
+        rows = result.scalars().all()
 
-    使用余弦相似度进行向量检索。
-    适用于小规模场景（< 10万文档）。
-    生产环境建议使用 Chroma、Pinecone 等专业向量库。
-    """
-
-    def __init__(self):
-        self.vectors = []  # [{ content, embedding, metadata }]
-
-    async def add_documents(self, documents):
-        """批量添加文档（分批向量化，降低内存峰值）"""
-        texts = [d.page_content for d in documents]
-        BATCH = 5  # 小批次，减少单批内存占用
-        for i in range(0, len(texts), BATCH):
-            batch = texts[i:i + BATCH]
-            batch_docs = documents[i:i + BATCH]
-            # 批量向量化
-            vecs = await get_embeddings().aembed_documents(batch)
-            for j, vec in enumerate(vecs):
-                self.vectors.append({
-                    'content': batch[j],
-                    'embedding': vec,
-                    'metadata': batch_docs[j].metadata,
-                })
-            logger.info('rag: embedding progress', {
-                'done': min(i + BATCH, len(texts)),
-                'total': len(texts),
-            })
-
-    async def similarity_search_with_score(self, query, k=4, filter_fn=None):
-        """
-        向量相似度搜索
-
-        参数：
-        - query: 查询文本
-        - k: 返回前 k 个结果
-        - filter_fn: 可选的过滤函数
-
-        返回：[(文档, 相似度分数), ...]
-        """
-        query_vec = await get_embeddings().aembed_query(query)
-
-        pool = self.vectors
-        if filter_fn:
-            pool = [v for v in pool if filter_fn(v['content'], v['metadata'])]
-
-        scored = []
-        for v in pool:
-            score = _cosine_sim(query_vec, v['embedding'])
-            scored.append((v, score))
-        scored.sort(key=lambda x: x[1], reverse=True)
-
-        return [({'pageContent': v['content'], 'metadata': v['metadata']}, s)
-                for v, s in scored[:k]]
-
-
-def _cosine_sim(a, b):
-    """计算余弦相似度"""
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return dot / (na * nb) if na * nb else 0
-
-
-# ── 向量库单例 ──────────────────────────────────────────────
-
-_vector_store = None
-
-
-async def get_vector_store():
-    """获取或初始化向量库单例"""
-    global _vector_store
-    if _vector_store:
-        return _vector_store
-    _vector_store = MemoryVectorStore()
-    logger.info('rag: memory vector store initialized')
-    return _vector_store
-
-
-# ── 文档注册表 ──────────────────────────────────────────────
-
-# 内存存储文档元信息
-_doc_registry = {}
+    for row in rows:
+        _doc_registry[row.id] = {
+            'id': row.id,
+            'title': row.title,
+            'fileName': row.file_name,
+            'category': row.category,
+            'chunks': row.chunks,
+            'chars': row.chars,
+            'preview': row.preview,
+            'uploadedAt': row.created_at.isoformat() if row.created_at else None,
+        }
 
 
 def get_doc_registry():
@@ -128,20 +63,6 @@ def get_doc(doc_id):
 
 # ── 文本提取 ────────────────────────────────────────────────
 
-def _extract_text_from_parse(result):
-    """递归从 MinerU parse 结果中提取所有文本字符串"""
-    texts = []
-    if isinstance(result, str):
-        texts.append(result)
-    elif isinstance(result, dict):
-        for v in result.values():
-            texts.extend(_extract_text_from_parse(v))
-    elif isinstance(result, list):
-        for item in result:
-            texts.extend(_extract_text_from_parse(item))
-    return texts
-
-
 def _extract_pdf_by_pypdf(file_path):
     """使用 pypdf 提取 PDF 文本（fallback 方案）"""
     from pypdf import PdfReader
@@ -150,36 +71,90 @@ def _extract_pdf_by_pypdf(file_path):
 
 
 async def _extract_pdf_by_mineru(file_path):
-    """通过 MinerU KIE SDK 提取 PDF 文本，失败时 fallback 到 pypdf"""
+    """通过 MinerU v4 精准解析 API 提取 PDF 文本，失败时 fallback 到 pypdf"""
+    import io
+    import time
+    import zipfile
+
+    import requests
+
     from ...config import config
 
     mc = config.get('mineru', {})
-    pipeline_id = mc.get('pipeline_id', '')
-    base_url = mc.get('base_url', 'https://mineru.net/api/kie')
     api_key = mc.get('api_key', '')
     timeout = mc.get('timeout', 120)
-
-    if not pipeline_id:
-        logger.warn('mineru: pipeline_id 未配置，fallback 到 pypdf')
-        return _extract_pdf_by_pypdf(file_path)
+    model_version = mc.get('model_version', 'vlm')
 
     if not api_key:
         logger.warn('mineru: api_key 未配置，fallback 到 pypdf')
         return _extract_pdf_by_pypdf(file_path)
 
+    base_url = 'https://mineru.net'
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}',
+    }
+
     def _sync():
-        from mineru_kie_sdk import MineruKIEClient
-        client = MineruKIEClient(base_url=base_url, pipeline_id=pipeline_id, timeout=timeout)
-        client.headers['Authorization'] = f'Bearer {api_key}'
-        file_ids = client.upload_file(file_path)
-        results = client.get_result(file_ids=file_ids, timeout=timeout, poll_interval=5)
-        parse_result = results.get('parse')
-        if parse_result is None:
-            raise RuntimeError('MinerU 返回解析结果为空')
-        # 尝试通过 get_result() 方法获取结构化数据
-        result_obj = parse_result.get_result() if hasattr(parse_result, 'get_result') else parse_result
-        texts = _extract_text_from_parse(result_obj)
-        return '\n'.join(texts)
+        file_name = os.path.basename(file_path)
+
+        # Step 1: 申请签名上传 URL
+        resp = requests.post(
+            f'{base_url}/api/v4/file-urls/batch',
+            headers=headers,
+            json={
+                'files': [{'name': file_name}],
+                'model_version': model_version,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('code') != 0:
+            raise RuntimeError(f"申请上传URL失败: {data.get('msg')}")
+
+        batch_id = data['data']['batch_id']
+        file_urls = data['data']['file_urls']
+
+        # Step 2: PUT 上传文件到签名 URL
+        with open(file_path, 'rb') as f:
+            upload_resp = requests.put(file_urls[0], data=f)
+            upload_resp.raise_for_status()
+
+        # Step 3: 轮询解析结果
+        start = time.time()
+        poll_interval = 5
+        while time.time() - start < timeout:
+            poll_resp = requests.get(
+                f'{base_url}/api/v4/extract-results/batch/{batch_id}',
+                headers=headers,
+            )
+            poll_resp.raise_for_status()
+            poll_data = poll_resp.json()
+
+            if poll_data.get('code') != 0:
+                raise RuntimeError(f"查询解析结果失败: {poll_data.get('msg')}")
+
+            results = poll_data['data']['extract_result']
+            item = results[0]
+            state = item['state']
+
+            if state == 'done':
+                # Step 4: 下载 zip，提取 full.md
+                zip_url = item['full_zip_url']
+                zip_resp = requests.get(zip_url)
+                zip_resp.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+                    for name in zf.namelist():
+                        if name.endswith('full.md'):
+                            return zf.read(name).decode('utf-8')
+                raise RuntimeError('zip 中未找到 full.md')
+
+            if state == 'failed':
+                raise RuntimeError(f"解析失败: {item.get('err_msg', '未知错误')}")
+
+            time.sleep(poll_interval)
+
+        raise RuntimeError(f'轮询超时 ({timeout}s)')
 
     try:
         return await asyncio.to_thread(_sync)
@@ -206,7 +181,6 @@ async def extract_text(file_path):
     if ext == '.pdf':
         return await _extract_pdf_by_mineru(file_path)
 
-    # 默认当作文本处理
     with open(file_path, 'r', encoding='utf-8') as f:
         return f.read()
 
@@ -225,7 +199,7 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
 
     返回：文档元信息
     """
-    doc_id = f'doc_{int(datetime.now().timestamp() * 1000)}_{uuid.uuid4().hex[:5]}'
+    doc_id = str(uuid.uuid4())
     logger.info('rag: ingesting document', {'docId': doc_id, 'title': title, 'category': category})
 
     # 1. 提取文本
@@ -235,8 +209,8 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
 
     # 2. 文本分片
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,       # 每片 500 字符
-        chunk_overlap=50,     # 重叠 50 字符，保持上下文连贯
+        chunk_size=500,
+        chunk_overlap=50,
         separators=['\n\n', '\n', '。', '；', '，', ' ', ''],
     )
 
@@ -258,11 +232,35 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
 
     logger.info('rag: document split', {'docId': doc_id, 'chunks': len(chunks)})
 
-    # 4. 向量化并存入向量库
-    vs = await get_vector_store()
-    await vs.add_documents(chunks)
+    # 4. 向量化并批量入库 PostgreSQL + pgvector
+    texts = [d.page_content for d in chunks]
+    BATCH = 5
+    documents_to_insert = []
 
-    # 5. 保存文档元信息
+    for i in range(0, len(texts), BATCH):
+        batch = texts[i:i + BATCH]
+        batch_docs = chunks[i:i + BATCH]
+        vecs = await get_embeddings().aembed_documents(batch)
+
+        for j, vec in enumerate(vecs):
+            documents_to_insert.append({
+                'doc_id': doc_id,
+                'chunk_index': i + j,
+                'content': batch[j],
+                'embedding': vec,
+                'metadata': batch_docs[j].metadata,
+            })
+
+        logger.info('rag: embedding progress', {
+            'done': min(i + BATCH, len(texts)),
+            'total': len(texts),
+        })
+
+    # 5. 存入 pgvector
+    vs = await get_vector_store()
+    await vs.add_documents(documents_to_insert)
+
+    # 6. 保存文档元信息到数据库
     doc_meta = {
         'id': doc_id,
         'title': title or file_name,
@@ -270,12 +268,27 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
         'category': category,
         'chunks': len(chunks),
         'chars': len(raw_text),
-        'uploadedAt': datetime.now(timezone.utc).isoformat(),
         'preview': raw_text[:120].replace('\n', ' ') + '...',
+        'uploadedAt': datetime.now(timezone.utc).isoformat(),
     }
+
+    # 保存到 documents 表
+    async with async_session_factory() as session:
+        doc = Document(
+            id=doc_id,
+            title=title or file_name,
+            file_name=file_name,
+            category=category,
+            chunks=len(chunks),
+            chars=len(raw_text),
+            preview=raw_text[:200].replace('\n', ' ') + '...',
+        )
+        session.add(doc)
+        await session.commit()
+
     _doc_registry[doc_id] = doc_meta
 
-    # 6. 清理临时文件
+    # 7. 清理临时文件
     try:
         os.unlink(file_path)
     except OSError:
@@ -286,17 +299,18 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
 
 
 async def delete_document(doc_id):
-    """删除文档（从注册表和向量库中移除）"""
+    """删除文档（从 pgvector 和数据库中移除）"""
     if doc_id not in _doc_registry:
         raise ValueError('文档不存在')
 
-    global _vector_store
-    if _vector_store:
-        # 从向量库中移除该文档的所有分片
-        _vector_store.vectors = [
-            v for v in _vector_store.vectors
-            if v['metadata'].get('docId') != doc_id
-        ]
+    vs = await get_vector_store()
+    await vs.delete_by_doc_id(doc_id)
+
+    # 从 documents 表删除
+    from sqlalchemy import delete
+    async with async_session_factory() as session:
+        await session.execute(delete(Document).where(Document.id == doc_id))
+        await session.commit()
 
     del _doc_registry[doc_id]
     logger.info('rag: document deleted', {'docId': doc_id})

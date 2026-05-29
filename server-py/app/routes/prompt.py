@@ -17,27 +17,21 @@ Prompt 调试路由模块
 - 模板版本管理
 """
 
-import json
 import time as _time
-from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from langchain_core.messages import HumanMessage, SystemMessage
+from sse_starlette.sse import EventSourceResponse
 
 from ..services.model import create_chat_model
 from ..services.prompt.prompt_service import (
     list_templates, get_template, save_template, delete_template, score_ab_test,
 )
-from ..utils.errors import send_sse_error
+from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
 prompt_router = APIRouter()
-
-
-def sse(event, data):
-    """将数据格式化为 SSE 事件格式"""
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @prompt_router.post('/test/stream')
@@ -68,7 +62,7 @@ async def prompt_test_stream(req: dict):
                 messages.append(SystemMessage(system_prompt))
             messages.append(HumanMessage(user_message))
 
-            yield sse('start', {'temperature': temperature, 'maxTokens': max_tokens})
+            yield sse_event('start', {'temperature': temperature, 'maxTokens': max_tokens})
 
             full_reply = ''
             input_tokens = 0
@@ -78,7 +72,7 @@ async def prompt_test_stream(req: dict):
             async for chunk in test_model.astream(messages):
                 if chunk.content:
                     full_reply += chunk.content
-                    yield sse('token', {'token': chunk.content})
+                    yield sse_event('token', {'token': chunk.content})
                 if chunk.usage_metadata:
                     input_tokens = chunk.usage_metadata.get('input_tokens', 0) or 0
                     output_tokens = chunk.usage_metadata.get('output_tokens', 0) or 0
@@ -86,7 +80,7 @@ async def prompt_test_stream(req: dict):
             latency_ms = int(_time.time() * 1000) - start_ms
 
             # DeepSeek 定价：输入 $0.27/M，输出 $1.10/M，汇率 7.2
-            yield sse('done', {
+            yield sse_event('done', {
                 'latencyMs': latency_ms,
                 'inputTokens': input_tokens,
                 'outputTokens': output_tokens,
@@ -97,13 +91,9 @@ async def prompt_test_stream(req: dict):
             logger.info('prompt test done', {'latencyMs': latency_ms, 'inputTokens': input_tokens})
         except Exception as err:
             logger.error('prompt test error', {'error': str(err)})
-            yield send_sse_error(err)
+            yield sse_error(err)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return EventSourceResponse(event_generator())
 
 
 @prompt_router.post('/ab-test')

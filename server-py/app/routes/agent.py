@@ -17,23 +17,18 @@ Agent 基于 ReAct 模式（Reasoning + Acting）：
 """
 
 import asyncio
-import json
 from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from ..services.agent.agent import run_agent, get_tool_list
 from ..middleware import check_injection
-from ..utils.errors import send_sse_error
+from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
 agent_router = APIRouter()
-
-
-def sse(event, data):
-    """将数据格式化为 SSE 事件格式"""
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @agent_router.post('/run')
@@ -68,7 +63,7 @@ async def agent_run(req: dict):
 
     async def collect_event(event_type, data):
         """收集 Agent 发出的事件到队列"""
-        await queue.put(sse(event_type, data))
+        await queue.put(sse_event(event_type, data))
 
     async def run_task():
         """后台执行 Agent 任务"""
@@ -76,7 +71,7 @@ async def agent_run(req: dict):
             await run_agent(task, collect_event)
         except Exception as err:
             logger.error('agent route: task failed', {'error': str(err)})
-            await queue.put(send_sse_error(err))
+            await queue.put(sse_error(err))
         finally:
             done_event.set()
 
@@ -85,7 +80,7 @@ async def agent_run(req: dict):
 
     async def event_generator():
         """SSE 事件生成器"""
-        yield sse('start', {'task': task, 'timestamp': datetime.now().isoformat()})
+        yield sse_event('start', {'task': task, 'timestamp': datetime.now().isoformat()})
         # 循环直到任务完成且队列清空
         while not done_event.is_set() or not queue.empty():
             try:
@@ -94,15 +89,7 @@ async def agent_run(req: dict):
             except asyncio.TimeoutError:
                 continue
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache, no-transform',
-            'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive',
-        },
-    )
+    return EventSourceResponse(event_generator())
 
 
 @agent_router.get('/tools')

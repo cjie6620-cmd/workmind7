@@ -10,7 +10,8 @@
 from datetime import datetime
 from typing import List, Optional, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from ..model import create_chat_model
 from ...utils.llm_parse import parse_with_retry
@@ -18,9 +19,14 @@ from ...utils.llm_parse import parse_with_retry
 model = create_chat_model(temperature=0)
 
 
+class CamelModel(BaseModel):
+    """统一 camelCase 输出的基类，前后端字段名一致"""
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
 # ── 报销申请 ────────────────────────────────────────────────
 
-class ExpenseItem(BaseModel):
+class ExpenseItem(CamelModel):
     """报销明细项"""
     name: str = Field(description='费用项目名称，如"高铁票""住宿费"')
     amount: float = Field(description='金额，单位：元')
@@ -28,7 +34,7 @@ class ExpenseItem(BaseModel):
     note: Optional[str] = Field(default=None, description='备注')
 
 
-class ExpenseForm(BaseModel):
+class ExpenseForm(CamelModel):
     """报销单表单"""
     type: Literal['travel', 'meal', 'office', 'training', 'other'] = Field(
         description='费用类型：travel=差旅, meal=餐饮, office=办公用品, training=培训, other=其他'
@@ -75,7 +81,7 @@ async def parse_expense_form(text):
 
 # ── 请假申请 ────────────────────────────────────────────────
 
-class LeaveForm(BaseModel):
+class LeaveForm(CamelModel):
     """请假单表单"""
     type: Literal['annual', 'personal', 'sick', 'compensatory', 'marriage', 'maternity'] = Field(
         description='假期类型：annual=年假, personal=事假, sick=病假, compensatory=调休, marriage=婚假, maternity=产假'

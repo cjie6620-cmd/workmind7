@@ -6,13 +6,13 @@ Chat 会话管理模块
 """
 
 from .memory import (
-    get_history, trim_history, clear_history,
+    get_history_db, trim_history, clear_history,
     get_profile, get_profile_camel, profile_to_context, fire_and_forget_profile,
-    list_sessions,
+    list_sessions, save_message, get_session_info,
 )
 
 __all__ = [
-    'get_history',
+    'get_history_db',
     'trim_history',
     'clear_history',
     'get_profile',
@@ -20,4 +20,6 @@ __all__ = [
     'profile_to_context',
     'fire_and_forget_profile',
     'list_sessions',
+    'save_message',
+    'get_session_info',
 ]

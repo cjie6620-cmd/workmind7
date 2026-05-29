@@ -6,14 +6,19 @@ Multi-Agent 审批流模块
 2. 每个审批节点由一个 Agent 角色执行
 3. 支持追问（审批人提问 → 申请人回答 → 审批人决定）
 4. 任一审批人驳回则流程终止
+5. 审批记录持久化到 PostgreSQL
 """
 
+import asyncio
 import json
+import uuid
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from ..model import create_chat_model
+from ...core.database import async_session_factory
+from ...models.entities import ApprovalRecord
 from ...utils.logger import logger
 
 model = create_chat_model(temperature=0.3)
@@ -92,12 +97,17 @@ def _plan_approval_flow(form_data, form_type):
     flow = ['manager']
     if form_type == 'expense':
         flow.append('finance')
-        if form_data.get('totalAmount', form_data.get('total_amount', 0)) > 5000:
+        amount = form_data.get('totalAmount', form_data.get('total_amount', 0))
+        logger.info('erp: plan flow', {'formType': form_type, 'amount': amount, 'threshold': 5000})
+        if amount > 5000:
             flow.append('director')
     else:
         flow.append('hr')
-        if (form_data.get('workdays', 0)) > 5:
+        workdays = form_data.get('workdays', 0)
+        logger.info('erp: plan flow', {'formType': form_type, 'workdays': workdays, 'threshold': 5})
+        if workdays > 5:
             flow.append('director')
+    logger.info('erp: planned approvers', {'flow': flow})
     return flow
 
 
@@ -180,7 +190,38 @@ async def _run_approver_turn(role_id, form_data, form_type, conversation_history
     return {'approved': _is_approved(question_text), 'comment': question_text}
 
 
-async def run_approval_flow(form_data, form_type, emit_event):
+async def _save_approval_record(
+    session_id: str,
+    form_type: str,
+    form_data: dict,
+    flow_json: dict,
+    approvers: list,
+    status: str,
+    final_comment: str,
+    result_json: dict,
+    completed_at: datetime = None,
+):
+    """保存审批记录到 PostgreSQL"""
+    async with async_session_factory() as session:
+        record = ApprovalRecord(
+            id=uuid.uuid4(),
+            session_id=session_id,
+            form_type=form_type,
+            form_data=form_data,
+            flow_json=flow_json,
+            approvers=approvers,
+            status=status,
+            final_comment=final_comment,
+            result_json=result_json,
+            completed_at=completed_at,
+        )
+        session.add(record)
+        await session.commit()
+        logger.info('erp: record saved', {'id': str(record.id)})
+        return str(record.id)
+
+
+async def run_approval_flow(form_data, form_type, emit_event, session_id=None):
     """
     执行完整的审批流程
 
@@ -188,6 +229,7 @@ async def run_approval_flow(form_data, form_type, emit_event):
     - form_data: 表单数据
     - form_type: 表单类型（expense/leave）
     - emit_event: 事件回调，用于 SSE 推送
+    - session_id: 会话ID（用于关联记录）
 
     SSE 事件：
     - plan: 审批流程规划
@@ -196,13 +238,17 @@ async def run_approval_flow(form_data, form_type, emit_event):
     - approver_done: 审批人完成
     - final: 最终结果
     """
-    logger.info('erp: approval flow started', {'formType': form_type})
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+
+    logger.info('erp: approval flow started', {'formType': form_type, 'sessionId': session_id})
 
     # 1. 规划审批流
     approver_ids = _plan_approval_flow(form_data, form_type)
+    approvers_data = [APPROVAL_ROLES[id] for id in approver_ids]
 
     await emit_event('plan', {
-        'approvers': [APPROVAL_ROLES[id] for id in approver_ids],
+        'approvers': approvers_data,
         'totalSteps': len(approver_ids),
     })
 
@@ -213,6 +259,7 @@ async def run_approval_flow(form_data, form_type, emit_event):
 
     all_approved = True
     final_comment = ''
+    approver_results = []
 
     # 2. 依次执行每个审批人
     for role_id in approver_ids:
@@ -222,6 +269,13 @@ async def run_approval_flow(form_data, form_type, emit_event):
         result = await _run_approver_turn(
             role_id, form_data, form_type, conversation_history, emit_event
         )
+
+        approver_results.append({
+            'roleId': role_id,
+            'roleName': role['name'],
+            'approved': result['approved'],
+            'comment': result['comment'],
+        })
 
         await emit_event('approver_done', {
             'roleId': role_id, 'role': role,
@@ -235,18 +289,81 @@ async def run_approval_flow(form_data, form_type, emit_event):
             break
 
         final_comment = result['comment']
-        import asyncio
         await asyncio.sleep(0.3)  # 间隔，避免过快
 
-    # 3. 返回结果
+    # 3. 构建流程定义
+    flow_json = {
+        'approverIds': approver_ids,
+        'flow': approver_ids,
+    }
+
+    # 4. 构建完整结果
+    completed_at = datetime.utcnow()
     output = {
         'approved': all_approved,
         'status': 'approved' if all_approved else 'rejected',
         'comment': final_comment,
         'approvedBy': [APPROVAL_ROLES[id]['name'] for id in approver_ids] if all_approved else [],
-        'completedAt': datetime.now().isoformat(),
+        'completedAt': completed_at.isoformat(),
+        'sessionId': session_id,
     }
 
+    # 5. 持久化到 PostgreSQL
+    record_id = await _save_approval_record(
+        session_id=session_id,
+        form_type=form_type,
+        form_data=form_data,
+        flow_json=flow_json,
+        approvers=approvers_data,
+        status=output['status'],
+        final_comment=final_comment,
+        result_json={
+            'allApproved': all_approved,
+            'approverResults': approver_results,
+            'finalComment': final_comment,
+        },
+        completed_at=completed_at,
+    )
+    output['recordId'] = record_id
+
     await emit_event('final', output)
-    logger.info('erp: approval flow done', {'formType': form_type, 'approved': all_approved})
+    logger.info('erp: approval flow done', {'formType': form_type, 'approved': all_approved, 'recordId': record_id})
     return output
+
+
+async def get_approval_records(session_id: str = None, status: str = None, limit: int = 20) -> list:
+    """
+    查询审批记录
+
+    参数：
+    - session_id: 可选，限定会话ID
+    - status: 可选，限定状态（pending/approved/rejected）
+    - limit: 返回数量限制
+    """
+    from sqlalchemy import select, desc
+
+    async with async_session_factory() as session:
+        query = select(ApprovalRecord).order_by(desc(ApprovalRecord.created_at))
+
+        if session_id:
+            query = query.where(ApprovalRecord.session_id == session_id)
+        if status:
+            query = query.where(ApprovalRecord.status == status)
+
+        result = await session.execute(query.limit(limit))
+        records = result.scalars().all()
+
+    return [
+        {
+            'id': str(r.id),
+            'sessionId': r.session_id,
+            'formType': r.form_type,
+            'formData': r.form_data,
+            'status': r.status,
+            'finalComment': r.final_comment,
+            'approvedBy': [a['name'] for a in (r.approvers or [])],
+            'createdAt': r.created_at.isoformat() if r.created_at else None,
+            'completedAt': r.completed_at.isoformat() if r.completed_at else None,
+        }
+        for r in records
+    ]

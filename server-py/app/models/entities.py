@@ -1,0 +1,140 @@
+"""
+SQLAlchemy ORM 模型定义
+
+对应 PostgreSQL 表结构，使用 pgvector 存储向量
+"""
+
+import uuid
+from datetime import datetime
+from typing import Optional, List
+
+from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, Index, text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
+
+from ..core.database import Base
+
+
+class Document(Base):
+    """
+    文档表
+
+    存储知识库文档元信息
+    """
+    __tablename__ = 'documents'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), default='通用')
+    chunks: Mapped[int] = mapped_column(Integer, default=0)
+    chars: Mapped[int] = mapped_column(Integer, default=0)
+    preview: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RagChunk(Base):
+    """
+    RAG 知识库切片表
+
+    存储文档切片和对应的向量嵌入
+    """
+    __tablename__ = 'rag_chunks'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    doc_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # pgvector 向量类型（bge-m3 输出维度 1024）
+    embedding = mapped_column(Vector(1024), nullable=True)
+    metadata_: Mapped[dict] = mapped_column('metadata', JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index('idx_rag_chunks_doc_id', 'doc_id'),
+    )
+
+
+class Conversation(Base):
+    """
+    对话历史表
+
+    存储用户与 AI 的对话记录
+    """
+    __tablename__ = 'conversations'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    metadata_: Mapped[dict] = mapped_column('metadata', JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_conversations_session', 'session_id', 'created_at'),
+    )
+
+
+class ApprovalRecord(Base):
+    """
+    审批记录表
+
+    存储审批流程的完整记录
+    """
+    __tablename__ = 'approval_records'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    session_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    form_type: Mapped[str] = mapped_column(String(32), nullable=False)  # expense/leave
+    form_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    flow_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    approvers: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # pending/approved/rejected
+    final_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('idx_approval_session', 'session_id'),
+        Index('idx_approval_status', 'status'),
+    )
+
+
+class AgentConfig(Base):
+    """
+    Agent/工作流配置表
+
+    存储 Agent、工作流、Prompt 等配置
+    """
+    __tablename__ = 'agent_configs'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    config_type: Mapped[str] = mapped_column(String(32), nullable=False)  # agent/workflow/prompt
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index('idx_agent_configs_type', 'config_type'),
+        Index('idx_agent_configs_active', 'is_active'),
+    )

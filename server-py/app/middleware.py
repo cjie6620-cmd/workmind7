@@ -99,7 +99,15 @@ def check_injection(message: str) -> bool:
 
 # ── 中间件注册 ───────────────────────────────────────────────
 
-SSE_PATHS = {'/api/agent/run'}
+SSE_PATHS = {
+    '/api/chat/stream',
+    '/api/agent/run',
+    '/api/workflow/start/stream',
+    '/api/workflow/resume/stream',
+    '/api/erp/submit/stream',
+    '/api/prompt/test/stream',
+    '/api/knowledge/query/stream',
+}
 
 
 class StreamingSafeMiddleware:

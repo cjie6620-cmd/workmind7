@@ -57,12 +57,13 @@ export const useAgentStore = defineStore('agent', () => {
     // 创建任务记录（先加进列表，实时更新）
     const task = {
       id,
-      task:      taskText,
-      steps:     [],       // 工具调用步骤数组
-      answer:    '',       // 最终回答
-      status:    'running',  // running | done | error
-      startTime: new Date().toISOString(),
-      duration:  0,
+      task:       taskText,
+      steps:      [],       // 工具调用步骤数组
+      answer:     '',       // 最终回答
+      status:     'running',  // running | done | error
+      startTime:  new Date().toISOString(),
+      duration:   0,
+      reportMeta: null,      // 报告元数据（含 id/title/content），用于下载
     }
 
     // unshift 后获取 Vue Proxy 包装后的响应式对象
@@ -101,12 +102,17 @@ export const useAgentStore = defineStore('agent', () => {
               step.result    = data.resultText
               step.status    = 'done'
               step.durationMs = Date.now() - step.startMs
+              if (data.report) step.report = data.report
             }
+            // 报告元数据存储到任务级别（无论是否有匹配的 step）
+            if (data.report) rt.reportMeta = data.report
           }
 
           if (event === 'done') {
             rt.status   = 'done'
             rt.duration = Date.now() - startTime
+            // done 事件附带的报告元数据（二级保障）
+            if (data.lastReport && !rt.reportMeta) rt.reportMeta = data.lastReport
             currentTask.value = null
           }
 

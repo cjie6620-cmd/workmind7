@@ -14,9 +14,6 @@
 - UNKNOWN: 未知错误
 """
 
-import json
-
-
 class AppError(Exception):
     """
     应用层异常
@@ -75,14 +72,9 @@ def classify_error(err):
 
 def send_sse_error(err):
     """
-    生成 SSE 格式的错误事件
+    生成 SSE 格式的错误事件（已废弃，请使用 sse.utils.sse.sse_error）
 
-    用于 SSE 流式响应中的错误推送
-
-    返回格式：
-    event: error
-    data: {"message": "...", "retryable": true/false}
+    保留此函数仅为向后兼容，新代码请用 sse_error()
     """
-    app_err = classify_error(err)
-    data = json.dumps({'message': app_err.user_message, 'retryable': app_err.retryable}, ensure_ascii=False)
-    return f'event: error\ndata: {data}\n\n'
+    from .sse import sse_error
+    return sse_error(err)

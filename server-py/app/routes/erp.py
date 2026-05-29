@@ -17,15 +17,15 @@ ERP 路由模块
 """
 
 import asyncio
-import json
 from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from ..services.erp.parser import parse_expense_form, parse_leave_form
 from ..services.erp.approval import run_approval_flow, APPROVAL_ROLES
-from ..utils.errors import send_sse_error
+from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 from pydantic import ValidationError
 
@@ -33,11 +33,6 @@ erp_router = APIRouter()
 
 # 内存存储申请数据（生产环境应使用数据库）
 applications = {}
-
-
-def sse(event, data):
-    """将数据格式化为 SSE 事件格式"""
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 @erp_router.post('/parse')
@@ -61,7 +56,7 @@ async def erp_parse(req: dict):
         else:
             form = await parse_leave_form(text)
 
-        form_dict = form.model_dump(exclude={'warnings'})
+        form_dict = form.model_dump(by_alias=True, exclude={'warnings'})
         return {'success': True, 'form': form_dict, 'formType': form_type}
     except ValueError as err:
         logger.error('erp: json parse error', {'error': str(err)})
@@ -116,7 +111,7 @@ async def erp_submit_stream(req: dict):
 
     async def collect_event(event_type, data):
         """收集审批流事件"""
-        await queue.put(sse(event_type, data))
+        await queue.put(sse_event(event_type, data))
         # 同步存储消息记录
         if event_type == 'message':
             application['messages'].append(data)
@@ -129,27 +124,23 @@ async def erp_submit_stream(req: dict):
             application['updatedAt'] = datetime.now().isoformat()
         except Exception as err:
             logger.error('erp: approval error', {'error': str(err), 'appId': app_id})
-            await queue.put(send_sse_error(err))
+            await queue.put(sse_error(err))
         finally:
             done_event.set()
 
     asyncio.create_task(run())
 
     async def event_generator():
-        yield sse('start', {'appId': app_id, 'formType': form_type})
+        yield sse_event('start', {'appId': app_id, 'formType': form_type})
         while not done_event.is_set() or not queue.empty():
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=0.5)
                 yield item
             except asyncio.TimeoutError:
                 continue
-        yield sse('done', {'appId': app_id})
+        yield sse_event('done', {'appId': app_id})
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return EventSourceResponse(event_generator())
 
 
 @erp_router.get('/applications')

@@ -28,12 +28,49 @@ async def lifespan(app: FastAPI):
     """生命周期管理：服务启动和关闭时的清理逻辑"""
     validate_config()
 
-    # 预加载 embeddings 模型，避免在请求处理中首次加载触发 torch 段错误
+    # 校验数据库连接
+    import sys
+    try:
+        from .core.database import async_session_factory
+        from sqlalchemy import text
+        async with async_session_factory() as session:
+            await session.execute(text('SELECT 1'))
+        print('[OK] 数据库连接成功', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 数据库连接失败: {e}', file=sys.stderr)
+        print('[WARN] 对话历史、用户画像等功能将不可用', file=sys.stderr)
+
+    # 预加载 embeddings 模型（失败不阻塞启动，后续请求时按需加载）
     import sys
     print('Pre-loading embeddings model...', file=sys.stderr)
-    from .services.model import get_embeddings
-    get_embeddings()
-    print('Embeddings model loaded.', file=sys.stderr)
+    try:
+        from .services.model import get_embeddings
+        get_embeddings()
+        print('Embeddings model loaded.', file=sys.stderr)
+    except OSError as e:
+        print(f'[WARN] Embeddings 模型预加载失败（内存不足）：{e}', file=sys.stderr)
+        print('[WARN] 知识库相关功能将在首次请求时加载，请确保系统内存充足', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] Embeddings 模型预加载失败：{e}', file=sys.stderr)
+
+    # 初始化 pgvector 扩展和表结构（含已有数据库的列类型迁移）
+    print('Initializing pgvector schema...', file=sys.stderr)
+    try:
+        from .services.rag.pgvector_store import init_pgvector_schema
+        await init_pgvector_schema()
+        print('pgvector schema ready.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] pgvector 初始化失败: {e}', file=sys.stderr)
+
+    # 加载知识库文档注册表（从数据库恢复，表不存在时不阻塞启动）
+    print('Loading document registry...', file=sys.stderr)
+    try:
+        from .services.rag.ingest import load_doc_registry
+        await load_doc_registry()
+        print('Document registry loaded.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 文档注册表加载失败: {e}', file=sys.stderr)
+        print('[WARN] 知识库相关功能将不可用', file=sys.stderr)
 
     print(f'\nWorkMind Server started', file=sys.stderr)
     print(f'   URL: http://localhost:{config["app"]["port"]}', file=sys.stderr)
@@ -66,4 +103,7 @@ app.include_router(monitor_router, prefix='/api/monitor', tags=['monitor'])
 # 404 处理：未匹配的路由返回友好提示
 @app.api_route('/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 async def catch_all(path: str):
+    # /api 路径不应走到这里，说明路由注册有问题，返回 500 方便排查
+    if path.startswith('api/'):
+        return JSONResponse(status_code=500, content={'error': {'message': f'路由未匹配: /{path}'}})
     return JSONResponse(status_code=404, content={'error': {'message': '接口不存在'}})

@@ -1,7 +1,7 @@
 // frontend/src/stores/chat.js
 // 对话模块全局状态：会话列表、当前会话消息、角色、用户画像
 import { defineStore } from 'pinia'
-import { ref, computed, reactive } from 'vue'
+import { ref, computed } from 'vue'
 import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
 import { useAppStore } from './app.js'
@@ -24,9 +24,27 @@ export const useChatStore = defineStore('chat', () => {
     currentSession.value?.messages || []
   )
 
-  // ── 初始化：创建第一个会话 ────────────────────────────────────
-  function init() {
-    if (sessions.value.length === 0) {
+  // ── 初始化：从后端加载会话列表 ──────────────────────────────
+  async function init() {
+    try {
+      // 从后端获取会话列表
+      const data = await http.get('/chat/sessions')
+      if (data.sessions && data.sessions.length > 0) {
+        sessions.value = data.sessions.map(s => ({
+          id: s.id,
+          title: s.title || '新对话',
+          messages: [],
+          createdAt: s.createdAt,
+          messageCount: s.messageCount,
+        }))
+        // 加载第一个会话的历史消息
+        currentId.value = sessions.value[0].id
+        await loadHistory(sessions.value[0].id)
+      } else {
+        newSession()
+      }
+    } catch (err) {
+      console.error('加载会话列表失败', err)
       newSession()
     }
   }
@@ -43,11 +61,33 @@ export const useChatStore = defineStore('chat', () => {
     return id
   }
 
-  function switchSession(id) {
+  async function switchSession(id) {
+    if (currentId.value === id) return
     currentId.value = id
+    await loadHistory(id)
   }
 
-  function deleteSession(id) {
+  async function loadHistory(sessionId) {
+    const session = sessions.value.find(s => s.id === sessionId)
+    if (!session) return
+
+    try {
+      const data = await http.get(`/chat/history/${sessionId}`)
+      session.messages = (data.messages || []).map(m => ({
+        id: m.id || `msg_${Date.now()}_${Math.random()}`,
+        role: m.role,
+        content: m.content,
+        time: m.createdAt,
+      }))
+    } catch (err) {
+      // 404 说明是新会话或会话已被清除，属于正常情况
+      if (err.response?.status !== 404) {
+        console.warn('加载历史消息失败', sessionId, err.message)
+      }
+    }
+  }
+
+  async function deleteSession(id) {
     const idx = sessions.value.findIndex(s => s.id === id)
     if (idx === -1) return
     sessions.value.splice(idx, 1)
@@ -59,7 +99,11 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // 同步删除服务端会话历史
-    http.delete(`/chat/sessions/${id}`).catch(() => {})
+    try {
+      await http.delete(`/chat/sessions/${id}`)
+    } catch (err) {
+      console.error('删除会话失败', err)
+    }
   }
 
   // 根据第一条消息自动生成会话标题
@@ -113,17 +157,18 @@ export const useChatStore = defineStore('chat', () => {
     updateTitle(currentId.value, text)
 
     // 添加 AI 消息占位（流式填充）
-    // 必须用 reactive() 包裹，使本地引用也是响应式代理
-    // 否则 push 后 Vue 给数组元素套的 Proxy 与本地变量是两个对象，onToken 里的赋值不触发更新
-    const aiMsg = reactive({
+    const aiMsg = {
       id:         `msg_${Date.now() + 1}`,
       role:       'assistant',
       content:    '',
       fromCache:  false,
       streaming:  true,
       time:       new Date().toISOString(),
-    })
+    }
     session.messages.push(aiMsg)
+
+    // 获取数组中实际的消息对象引用（确保响应式）
+    const aiMsgRef = session.messages[session.messages.length - 1]
 
     await fetchStream(
       '/api/chat/stream',
@@ -135,14 +180,14 @@ export const useChatStore = defineStore('chat', () => {
       },
       {
         onToken: (token) => {
-          aiMsg.content += token
+          aiMsgRef.content += token
         },
         onEvent: (event, data) => {
-          if (event === 'cache_hit') aiMsg.fromCache = true
-          if (event === 'start')     aiMsg.streaming = true
+          if (event === 'cache_hit') aiMsgRef.fromCache = true
+          if (event === 'start')     aiMsgRef.streaming = true
         },
         onDone: (data) => {
-          aiMsg.streaming = false
+          aiMsgRef.streaming = false
           // 记录用量
           if (!data.fromCache) {
             monitorStore.recordCall({
@@ -158,8 +203,8 @@ export const useChatStore = defineStore('chat', () => {
           loadProfile()
         },
         onError: (err) => {
-          aiMsg.streaming = false
-          aiMsg.content   = aiMsg.content || '抱歉，出现了一些问题，请重试。'
+          aiMsgRef.streaming = false
+          aiMsgRef.content   = aiMsgRef.content || '抱歉，出现了一些问题，请重试。'
           appStore.toast.error(err.message || '发送失败')
         },
       }

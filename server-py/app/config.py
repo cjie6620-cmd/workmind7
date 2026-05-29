@@ -53,10 +53,9 @@ config = {
         'url': _env('CHROMA_URL', 'http://localhost:8000'),
     },
     'mineru': {
-        'base_url': _env('MINERU_BASE_URL', 'https://mineru.net/api/kie'),
-        'pipeline_id': _env('MINERU_PIPELINE_ID'),
         'api_key': _env('MINERU_API_KEY'),
         'timeout': int(_env('MINERU_TIMEOUT', '120')),
+        'model_version': _env('MINERU_MODEL_VERSION', 'vlm'),
     },
     'cache': {
         'ttl': int(_env('CACHE_TTL', '1800000')),  # 毫秒，默认 30 分钟
@@ -66,6 +65,11 @@ config = {
         'port': int(_env('REDIS_PORT', '6380')),
         'password': _env('REDIS_PASSWORD', 'NFTurbo666'),
         'db': int(_env('REDIS_DB', '0')),
+    },
+    'database': {
+        'url': _env('DATABASE_URL', 'postgresql+asyncpg://ai_love:zx4221335@localhost:5433/ai_love_vector'),
+        'pool_size': int(_env('DB_POOL_SIZE', '10')),
+        'max_overflow': int(_env('DB_MAX_OVERFLOW', '20')),
     },
 }
 

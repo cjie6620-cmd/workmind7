@@ -41,21 +41,20 @@ copy .env.example .env
 ### 3. 启动后端
 
 ```powershell
-cd server-py
+cd C:\Users\33185\Desktop\企业\workmind7\server-py
 
 # 安装依赖（uv 自动管理虚拟环境）
-uv pip install -r requirements.txt
+uv pip install -r .\requirements.txt
 
 # 启动服务（使用项目虚拟环境中的 Python，避免全局 app 包冲突）
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 3000 --reload
-# 服务启动在 http://localhost:3000
-# API 文档：http://localhost:3000/docs
+
 ```
 
 ### 4. 启动前端
 
 ```powershell
-cd frontend
+cd C:\Users\33185\Desktop\企业\workmind7\frontend
 pnpm install
 pnpm dev
 # 页面打开在 http://localhost:5173

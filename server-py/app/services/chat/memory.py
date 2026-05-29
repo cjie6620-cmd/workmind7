@@ -2,14 +2,12 @@
 会话记忆管理模块
 
 提供两大功能：
-1. 短期记忆（会话历史）：
-   - 存储当前对话的消息历史
-   - 自动裁剪避免超出 token 限制
+1. 短期记忆（会话历史）：存储在 PostgreSQL
+2. 用户画像（跨会话）：存储在 PostgreSQL
 
-2. 用户画像（跨会话）：
-   - 从对话中提取用户背景信息
-   - 下次对话时注入上下文
-   - 支持异步更新，不阻塞响应
+特点：
+- 异步操作，基于 asyncpg
+- 自动裁剪避免超出 token 限制
 """
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -17,6 +15,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 
 from ..model import get_chat_model
+from ...core.database import async_session_factory
+from ...models.entities import Conversation
 from ...utils.logger import logger
 from ...utils.llm_parse import parse_with_retry
 
@@ -28,31 +28,121 @@ def est_tokens(text=''):
     估算文本 token 数量
 
     中文约 0.6 tokens/字符，英文约 0.25 tokens/字符
-    这是一个粗略估算，实际因模型而异
     """
-    cn = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')  # 中文字符范围
+    cn = sum(1 for c in text if '一' <= c <= '鿿')
     return int(cn * 0.6 + (len(text) - cn) * 0.25)
 
 
-# ── 会话历史管理 ────────────────────────────────────────────
+# ── 会话历史管理（PostgreSQL）───────────────────────────────
 
-# 内存存储会话历史（生产环境建议用 Redis）
-session_store = {}
+async def get_history_db(session_id: str) -> List[dict]:
+    """
+    获取指定会话的所有历史消息（从 PostgreSQL）
+
+    返回消息列表，按时间升序
+    """
+    from sqlalchemy import select
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.session_id == session_id)
+            .order_by(Conversation.created_at)
+        )
+        rows = result.scalars().all()
+
+    return [
+        {
+            'id': str(row.id),
+            'role': row.role,
+            'content': row.content,
+            'model': row.model,
+            'tokens': row.tokens,
+            'createdAt': row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
 
-def get_history(session_id):
-    """获取会话历史，不存在则创建空列表"""
-    if session_id not in session_store:
-        session_store[session_id] = []
-    return session_store[session_id]
+async def get_session_info(session_id: str) -> dict:
+    """
+    获取会话详情（包含消息列表和标题）
+
+    用于前端加载会话时获取完整数据
+    """
+    messages = await get_history_db(session_id)
+
+    # 生成会话标题：取第一条用户消息的前20字符
+    title = '新对话'
+    for msg in messages:
+        if msg['role'] == 'user':
+            title = msg['content'][:20] + ('...' if len(msg['content']) > 20 else '')
+            break
+
+    created_at = messages[0]['createdAt'] if messages else None
+
+    return {
+        'id': session_id,
+        'title': title,
+        'messages': messages,
+        'createdAt': created_at,
+    }
 
 
-def clear_history(session_id):
-    """删除指定会话"""
-    session_store.pop(session_id, None)
+async def save_message(session_id: str, role: str, content: str, model: str = None, tokens: int = None):
+    """
+    保存单条消息到 PostgreSQL
+
+    参数：
+    - session_id: 会话ID
+    - role: 角色（user/assistant/system）
+    - content: 消息内容
+    - model: 使用的模型
+    - tokens: token 数
+    """
+    async with async_session_factory() as session:
+        msg = Conversation(
+            session_id=session_id,
+            role=role,
+            content=content,
+            model=model,
+            tokens=tokens,
+        )
+        session.add(msg)
+        await session.commit()
 
 
-def trim_history(history, max_tokens=2000):
+async def save_messages_batch(session_id: str, messages: List[dict]):
+    """
+    批量保存消息到 PostgreSQL
+
+    参数：
+    - session_id: 会话ID
+    - messages: 消息列表 [{role, content, model, tokens}, ...]
+    """
+    async with async_session_factory() as session:
+        async with session.begin():
+            for msg in messages:
+                session.add(Conversation(
+                    session_id=session_id,
+                    role=msg['role'],
+                    content=msg['content'],
+                    model=msg.get('model'),
+                    tokens=msg.get('tokens'),
+                ))
+        await session.commit()
+
+
+async def clear_history(session_id: str):
+    """删除指定会话的所有消息"""
+    from sqlalchemy import delete
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(Conversation).where(Conversation.session_id == session_id)
+        )
+        await session.commit()
+
+
+def trim_history(history: List[dict], max_tokens=2000) -> List[dict]:
     """
     裁剪会话历史，保留近 max_tokens 个 token
 
@@ -61,36 +151,53 @@ def trim_history(history, max_tokens=2000):
     result = []
     total = 0
     for msg in reversed(history):
-        t = est_tokens(msg.content or '')
+        t = est_tokens(msg.get('content', ''))
         if total + t > max_tokens:
             break
-        result.insert(0, msg)  # 保持顺序
+        result.insert(0, msg)
         total += t
     return result
 
 
-# ── 用户画像 ────────────────────────────────────────────────
+# ── 用户画像（PostgreSQL）───────────────────────────────────
 
-# 内存存储用户画像（生产环境建议用数据库）
-profile_store = {}
-
-
-def get_profile(user_id):
-    """获取用户画像（snake_case 格式，内部使用）"""
-    return profile_store.get(user_id, {})
-
-
-def get_profile_camel(user_id):
+async def get_profile(user_id: str) -> dict:
     """
-    获取用户画像（camelCase 格式，API 返回使用）
+    获取用户画像（从 PostgreSQL 的 metadata 中读取）
 
-    字段映射：
-    - tech_level -> techLevel
-    - primary_stack -> primaryStack
+    简化实现：用户画像存储在 agent_configs 表
     """
-    profile = profile_store.get(user_id, {})
-    if not profile:
+    from sqlalchemy import select
+    from ...models.entities import AgentConfig
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(AgentConfig)
+            .where(AgentConfig.name == f'profile_{user_id}')
+            .where(AgentConfig.config_type == 'profile')
+        )
+        row = result.scalar_one_or_none()
+
+    if not row:
         return {}
+
+    config = row.config_json
+    return {
+        'name': config.get('name'),
+        'dept': config.get('dept'),
+        'tech_level': config.get('tech_level'),
+        'primary_stack': config.get('primary_stack'),
+        'current_goal': config.get('current_goal'),
+        'prefers_short': config.get('prefers_short'),
+        'prefers_code': config.get('prefers_code'),
+    }
+
+
+async def get_profile_camel(user_id: str) -> dict:
+    """
+    获取用户画像（驼峰格式，用于 API 响应）
+    """
+    profile = await get_profile(user_id)
     return {
         'name': profile.get('name'),
         'dept': profile.get('dept'),
@@ -102,16 +209,34 @@ def get_profile_camel(user_id):
     }
 
 
+async def save_profile(user_id: str, profile: dict):
+    """保存用户画像到 PostgreSQL"""
+    from ...models.entities import AgentConfig
+
+    async with async_session_factory() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(AgentConfig)
+            .where(AgentConfig.name == f'profile_{user_id}')
+            .where(AgentConfig.config_type == 'profile')
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.config_json = profile
+            existing.version += 1
+        else:
+            session.add(AgentConfig(
+                config_type='profile',
+                name=f'profile_{user_id}',
+                config_json=profile,
+            ))
+        await session.commit()
+
+
 def profile_to_context(profile):
     """
     将用户画像转换为 system prompt 上下文
-
-    格式示例：
-    用户背景：
-    - 用户姓名：张三
-    - 部门：技术部
-    - 技术水平：中级
-    - 偏好简短回答
     """
     if not profile:
         return ''
@@ -139,7 +264,7 @@ def profile_to_context(profile):
 
 class UserProfile(BaseModel):
     """用户画像数据模型"""
-    has_info: bool  # 是否有有效信息
+    has_info: bool
     name: Optional[str] = None
     dept: Optional[str] = None
     tech_level: Optional[Literal['初级', '中级', '高级', '架构师']] = None
@@ -152,14 +277,9 @@ class UserProfile(BaseModel):
 async def extract_and_update_profile(user_id, user_msg, ai_reply):
     """
     从对话中提取并更新用户画像
-
-    流程：
-    1. 获取当前画像
-    2. 调用 LLM 提取新信息
-    3. 合并更新到画像
     """
     try:
-        current = get_profile(user_id)
+        current = await get_profile(user_id)
 
         prompt = f"""从对话中提取用户信息，只填写有明确依据的字段。
 当前已知画像：{current}
@@ -183,38 +303,78 @@ async def extract_and_update_profile(user_id, user_msg, ai_reply):
 
         # 合并更新
         updated = {**current}
-        if data.get('name'):
-            updated['name'] = data['name']
-        if data.get('dept'):
-            updated['dept'] = data['dept']
-        if data.get('tech_level'):
-            updated['tech_level'] = data['tech_level']
-        if data.get('current_goal'):
-            updated['current_goal'] = data['current_goal']
-        if data.get('prefers_short') is not None:
-            updated['prefers_short'] = data['prefers_short']
-        if data.get('prefers_code') is not None:
-            updated['prefers_code'] = data['prefers_code']
+        for key in ['name', 'dept', 'tech_level', 'current_goal', 'prefers_short', 'prefers_code']:
+            if data.get(key) is not None:
+                updated[key] = data[key]
+
         if data.get('primary_stack'):
-            # 技术栈合并去重
             existing = current.get('primary_stack', [])
             updated['primary_stack'] = list(set(existing + data['primary_stack']))
 
-        profile_store[user_id] = updated
+        await save_profile(user_id, updated)
     except Exception as err:
         logger.warn('profile extract failed', {'error': str(err), 'userId': user_id})
 
 
 def fire_and_forget_profile(user_id, user_msg, ai_reply):
-    """
-    异步更新画像，不阻塞响应
-
-    使用 asyncio.create_task 在后台执行
-    """
+    """异步更新画像，不阻塞响应"""
     import asyncio
     asyncio.create_task(extract_and_update_profile(user_id, user_msg, ai_reply))
 
 
-def list_sessions():
-    """获取所有会话列表"""
-    return [{'id': sid, 'messageCount': len(msgs)} for sid, msgs in session_store.items()]
+# ── 兼容旧代码的同步接口（内存）─────────────────────────────
+
+# 保留内存版本作为向后兼容，某些场景可能需要
+_memory_store = {}
+
+
+def get_history_sync(session_id):
+    """同步获取会话历史（从内存，仅向后兼容）"""
+    return _memory_store.get(session_id, [])
+
+
+def clear_history_sync(session_id):
+    """同步删除会话（从内存，仅向后兼容）"""
+    _memory_store.pop(session_id, None)
+
+
+async def list_sessions() -> List[dict]:
+    """获取所有会话列表（从 PostgreSQL），包含标题和消息数"""
+    from sqlalchemy import select, func
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(
+                Conversation.session_id,
+                func.count(Conversation.id).label('message_count'),
+                func.min(Conversation.created_at).label('created_at'),
+            )
+            .group_by(Conversation.session_id)
+            .order_by(func.min(Conversation.created_at).desc())
+        )
+        rows = result.all()
+
+        sessions = []
+        for row in rows:
+            session_id = row[0]
+            # 获取第一条用户消息作为标题
+            title = '新对话'
+            r = await session.execute(
+                select(Conversation.content)
+                .where(Conversation.session_id == session_id)
+                .where(Conversation.role == 'user')
+                .order_by(Conversation.created_at)
+                .limit(1)
+            )
+            first_msg = r.scalar_one_or_none()
+            if first_msg:
+                title = first_msg[:20] + ('...' if len(first_msg) > 20 else '')
+
+            sessions.append({
+                'id': session_id,
+                'title': title,
+                'messageCount': row[1],
+                'createdAt': row[2].isoformat() if row[2] else None,
+            })
+
+    return sessions

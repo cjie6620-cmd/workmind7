@@ -2,19 +2,19 @@
 RAG 查询模块
 
 RAG（Retrieval Augmented Generation）流程：
-1. retrieve_docs: 向量检索相关文档
+1. retrieve_docs: 使用 pgvector 检索相关文档
 2. rag_query_stream: 基于检索结果生成回答
 
 特点：
+- 使用 PostgreSQL + pgvector 进行向量检索
 - 相似度阈值过滤（默认 0.3）
 - 支持按分类筛选
-- 生成回答时引用文档来源
 """
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from ..model import get_chat_model
-from .ingest import get_vector_store
+from ..model import get_chat_model, get_embeddings
+from .pgvector_store import get_vector_store
 from ...utils.logger import logger
 
 # 相似度阈值：低于此值的文档不返回
@@ -41,16 +41,18 @@ async def retrieve_docs(question, category=None, k=4):
 
     返回：相关文档列表（已按相似度排序）
     """
+    # 1. 将问题向量化
+    query_vec = await get_embeddings().aembed_query(question)
+
+    # 2. 使用 pgvector 搜索
     vs = await get_vector_store()
+    results = await vs.similarity_search_with_score(
+        query_vector=query_vec,
+        k=k,
+        category=category,
+    )
 
-    # 可选的分类过滤函数
-    filter_fn = None
-    if category:
-        filter_fn = lambda content, meta: meta.get('category') == category
-
-    results = await vs.similarity_search_with_score(question, k, filter_fn)
-
-    # 过滤低相似度结果
+    # 3. 过滤低相似度结果
     relevant = [(doc, score) for doc, score in results if score > SIMILARITY_THRESHOLD]
 
     logger.info('rag: retrieved docs', {

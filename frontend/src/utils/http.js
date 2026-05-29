@@ -78,8 +78,10 @@ export async function fetchStream(url, body, { onToken, onEvent, onDone, onError
 
       buffer += decoder.decode(value, { stream: true })
 
-      // SSE 格式：event 和 data 之间用 \n\n 分隔
-      const parts = buffer.split('\n\n')
+      // SSE 格式：event 和 data 之间用 \n\n 或 \r\n\r\n 分隔
+      // 兼容两种换行符格式
+      const normalized = buffer.replace(/\r\n/g, '\n')
+      const parts = normalized.split('\n\n')
       buffer = parts.pop() ?? ''
 
       for (const part of parts) {
@@ -87,13 +89,18 @@ export async function fetchStream(url, body, { onToken, onEvent, onDone, onError
 
         const lines = part.split('\n')
         let event = 'message'
-        let dataStr = ''
+        let dataLines = []
 
         for (const line of lines) {
-          if (line.startsWith('event: ')) event = line.slice(7).trim()
-          if (line.startsWith('data: '))  dataStr = line.slice(6)
+          if (line.startsWith('event: ')) {
+            event = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            dataLines.push(line.slice(6))
+          }
         }
 
+        // 支持多行 data：将所有 data 行合并
+        const dataStr = dataLines.join('\n')
         if (!dataStr) continue
 
         let data
@@ -110,6 +117,39 @@ export async function fetchStream(url, body, { onToken, onEvent, onDone, onError
         } else if (onEvent) {
           onEvent(event, data)
         }
+      }
+    }
+
+    // 处理 buffer 中剩余的数据
+    if (buffer.trim()) {
+      // 标准化换行符
+      const normalized = buffer.replace(/\r\n/g, '\n')
+      const lines = normalized.split('\n')
+      let event = 'message'
+      let dataLines = []
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          event = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
+          dataLines.push(line.slice(6))
+        }
+      }
+
+      const dataStr = dataLines.join('\n')
+      if (dataStr) {
+        try {
+          const data = JSON.parse(dataStr)
+          if (event === 'token' && onToken) {
+            onToken(data.token || '')
+          } else if (event === 'done' && onDone) {
+            onDone(data)
+          } else if (event === 'error') {
+            onError?.(new Error(data.message || '流式请求出错'))
+          } else if (onEvent) {
+            onEvent(event, data)
+          }
+        } catch {}
       }
     }
   } catch (err) {

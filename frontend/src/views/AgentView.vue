@@ -61,6 +61,7 @@
             <div class="answer-header">
               <span>最终回答</span>
               <button class="btn-copy" @click="copyAnswer(task.answer)">复制</button>
+              <button v-if="task.status === 'done' && task.answer && task.answer.trim().length > 50" class="btn-download-report" @click="downloadReport(task)">下载报告 .md</button>
             </div>
             <div class="answer-content markdown-body" v-html="renderMd(task.answer)" />
             <span v-if="task.status === 'running' && task.answer" class="cursor-blink" />
@@ -90,6 +91,39 @@ function formatTime(iso) { return iso ? new Date(iso).toLocaleTimeString('zh-CN'
 async function runTask() { if (!taskText.value.trim() || agentStore.running) return; const t = taskText.value.trim(); taskText.value = ''; await agentStore.runTask(t) }
 function useExample(task) { if (!agentStore.running) taskText.value = task }
 async function copyAnswer(text) { await navigator.clipboard.writeText(text); appStore.toast.success('已复制') }
+function extractReportId(text) { const m = text.match(/报告ID[：:]\s*([a-f0-9]{12})/); return m ? m[1] : null }
+function extractReportTitle(text) { const m = text.match(/# (.+)/); return m ? m[1] : '报告' }
+/** 从回答文本中提取真正的报告正文（去掉 LLM 引导语） */
+function extractReportBody(text) {
+  // 报告正文一定包含 ## 二级标题或表格行，引导语通常没有
+  // 找第一个 # 或 ## 标题行（多行模式下搜索）
+  const firstHeading = text.search(/^#{1,2}\s/m)
+  if (firstHeading > 0) return text.slice(firstHeading).trim()
+  // 再找第一个表格行
+  const firstTable = text.indexOf('\n| ')
+  if (firstTable > 0) return text.slice(firstTable).trim()
+  return text  // 没找到则返回原文
+}
+async function downloadReport(task) {
+  let filename = extractReportTitle(task.answer) || '报告'
+  let content = ''
+
+  // 优先用 task.reportMeta（工具调用产生的真实报告）
+  if (task.reportMeta) {
+    content = task.reportMeta.content
+    filename = task.reportMeta.title || filename
+  } else {
+    // 从回答文本提取报告正文（去掉引导语）
+    content = extractReportBody(task.answer)
+  }
+
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `${filename}.md`; a.click()
+  URL.revokeObjectURL(url)
+  appStore.toast.success('报告已下载')
+}
 onMounted(() => agentStore.loadMeta())
 </script>
 <style scoped>
@@ -132,7 +166,9 @@ onMounted(() => agentStore.loadMeta())
 .thinking-hint { display:flex; align-items:center; gap:10px; padding:var(--space-md) var(--space-lg); font-size:13px; color:var(--color-text-muted); }
 .final-answer { padding:var(--space-md) var(--space-lg) var(--space-lg); border-top:1px solid var(--color-border-light); }
 .answer-header { display:flex; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; font-weight:600; color:var(--color-text-sub); }
-.btn-copy { margin-left:auto; padding:2px 10px; font-size:11px; background:var(--color-border-light); border:1px solid var(--color-border); border-radius:var(--radius-sm); color:var(--color-text-sub); cursor:pointer; transition:all var(--transition); }
+.btn-download-report { padding:3px 12px; font-size:11px; font-weight:600; background:#8b5cf6; color:#fff; border:none; border-radius:var(--radius-sm); cursor:pointer; transition:background var(--transition); }
+.btn-download-report:hover { background:#7c3aed; }
+.btn-copy { margin-left:auto; margin-right:8px; padding:2px 10px; font-size:11px; background:var(--color-border-light); border:1px solid var(--color-border); border-radius:var(--radius-sm); color:var(--color-text-sub); cursor:pointer; transition:all var(--transition); }
 .btn-copy:hover { background:var(--color-primary-bg); color:var(--color-primary); }
 .answer-content { font-size:14px; line-height:1.75; color:var(--color-text); }
 .error-hint { display:flex; align-items:center; gap:6px; padding:var(--space-md) var(--space-lg); color:var(--color-danger); font-size:13px; background:#fef2f2; border-top:1px solid #fecaca; }

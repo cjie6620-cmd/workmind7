@@ -20,26 +20,21 @@
 """
 
 import asyncio
-import json
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from ..services.workflow.workflows import WORKFLOW_BUILDERS, WORKFLOW_META
-from ..utils.errors import send_sse_error
+from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
 workflow_router = APIRouter()
 
 # 存储活跃工作流实例（thread_id -> {graph, meta, config}）
 active_workflows = {}
-
-
-def sse(event, data):
-    """将数据格式化为 SSE 事件格式"""
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 # 工作流中间结果字段映射
@@ -117,7 +112,7 @@ async def start_workflow_stream(req: dict):
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)
                     if node_in_meta and name != last_node:
                         last_node = name
-                        await queue.put(sse('node_start', {'nodeId': name, 'label': node_in_meta['label']}))
+                        await queue.put(sse_event('node_start', {'nodeId': name, 'label': node_in_meta['label']}))
 
                 # 节点执行完成
                 if event_type == 'on_chain_end' and name not in ('__end__', 'LangGraph'):
@@ -130,14 +125,14 @@ async def start_workflow_stream(req: dict):
                             first_val = next(iter(output.values()), '')
                             if isinstance(first_val, str) and first_val:
                                 preview = first_val[:80] + ('...' if len(first_val) > 80 else '')
-                        await queue.put(sse('node_done', {'nodeId': name, 'preview': preview}))
+                        await queue.put(sse_event('node_done', {'nodeId': name, 'preview': preview}))
 
             # 工作流状态检查：是否有人工审核节点等待
             state = graph.get_state(wf_config)
 
             if state.next:
                 # 有人工节点中断，返回中间结果供用户确认
-                await queue.put(sse('paused', {
+                await queue.put(sse_event('paused', {
                     'threadId': thread_id,
                     'nextNode': state.next[0],
                     'intermediates': _get_intermediates(state.values, workflow_id),
@@ -145,18 +140,18 @@ async def start_workflow_stream(req: dict):
             else:
                 # 工作流正常完成
                 result = state.values.get(meta['resultKey'], '')
-                await queue.put(sse('completed', {'threadId': thread_id, 'result': result}))
+                await queue.put(sse_event('completed', {'threadId': thread_id, 'result': result}))
 
         except Exception as err:
             logger.error('workflow: start error', {'error': str(err), 'threadId': thread_id})
-            await queue.put(send_sse_error(err))
+            await queue.put(sse_error(err))
         finally:
             done_event.set()
 
     asyncio.create_task(run())
 
     async def event_generator():
-        yield sse('start', {'threadId': thread_id, 'workflowId': workflow_id})
+        yield sse_event('start', {'threadId': thread_id, 'workflowId': workflow_id})
         while not done_event.is_set() or not queue.empty():
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=0.5)
@@ -164,11 +159,7 @@ async def start_workflow_stream(req: dict):
             except asyncio.TimeoutError:
                 continue
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return EventSourceResponse(event_generator())
 
 
 @workflow_router.post('/resume/stream')
@@ -215,21 +206,21 @@ async def resume_workflow_stream(req: dict):
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)
                     if node_in_meta and name != last_node:
                         last_node = name
-                        await queue.put(sse('node_start', {'nodeId': name, 'label': node_in_meta['label']}))
+                        await queue.put(sse_event('node_start', {'nodeId': name, 'label': node_in_meta['label']}))
 
                 if event_type == 'on_chat_model_stream':
                     chunk = data.get('chunk')
                     if chunk and chunk.content:
-                        await queue.put(sse('token', {'token': chunk.content}))
+                        await queue.put(sse_event('token', {'token': chunk.content}))
 
                 if event_type == 'on_chain_end':
                     node_in_meta = next((n for n in meta['nodes'] if n['id'] == name), None)
                     if node_in_meta:
-                        await queue.put(sse('node_done', {'nodeId': name}))
+                        await queue.put(sse_event('node_done', {'nodeId': name}))
 
             final_state = graph.get_state(wf_config)
             result = final_state.values.get(meta['resultKey'], '')
-            await queue.put(sse('completed', {'threadId': thread_id, 'result': result}))
+            await queue.put(sse_event('completed', {'threadId': thread_id, 'result': result}))
 
             # 清理已完成的工作流实例
             active_workflows.pop(thread_id, None)
@@ -237,14 +228,14 @@ async def resume_workflow_stream(req: dict):
 
         except Exception as err:
             logger.error('workflow: resume error', {'error': str(err), 'threadId': thread_id})
-            await queue.put(send_sse_error(err))
+            await queue.put(sse_error(err))
         finally:
             done_event.set()
 
     asyncio.create_task(run())
 
     async def event_generator():
-        yield sse('resumed', {'threadId': thread_id})
+        yield sse_event('resumed', {'threadId': thread_id})
         while not done_event.is_set() or not queue.empty():
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=0.5)
@@ -252,8 +243,4 @@ async def resume_workflow_stream(req: dict):
             except asyncio.TimeoutError:
                 continue
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return EventSourceResponse(event_generator())

@@ -20,11 +20,12 @@ import time
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from ..services.rag.ingest import ingest_document, get_doc_registry, delete_document
 from ..services.rag.query import rag_query_stream
-from ..utils.errors import send_sse_error
+from ..utils.sse import sse_event, sse_error
 from ..utils.file_validate import validate_file, validate_ext, MAX_FILE_SIZE
 from ..utils.logger import logger
 
@@ -33,10 +34,6 @@ knowledge_router = APIRouter()
 # 文件上传目录
 UPLOAD_DIR = './uploads'
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-
-def sse(event, data):
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 def _safe_file_name(filename):
@@ -248,34 +245,30 @@ async def rag_stream(req: dict):
 
     async def event_generator():
         try:
-            yield sse('status', {'message': '正在检索相关文档...'})
+            yield sse_event('status', {'message': '正在检索相关文档...'})
 
             result = await rag_query_stream(question, {'category': category})
             sources = result['sources']
 
-            yield sse('sources', {'sources': sources})
+            yield sse_event('sources', {'sources': sources})
 
             if not sources:
-                yield sse('token', {'token': '知识库中未找到相关内容，请尝试上传相关文档后再提问。'})
-                yield sse('done', {})
+                yield sse_event('token', {'token': '知识库中未找到相关内容，请尝试上传相关文档后再提问。'})
+                yield sse_event('done', {})
                 return
 
-            yield sse('status', {'message': '正在生成回答...'})
+            yield sse_event('status', {'message': '正在生成回答...'})
 
             async for token in result['stream_answer']():
-                yield sse('token', {'token': token})
+                yield sse_event('token', {'token': token})
 
-            yield sse('done', {})
+            yield sse_event('done', {})
             logger.info('knowledge: query done', {'question': question[:40], 'sources': len(sources)})
         except Exception as err:
             logger.error('knowledge: query error', {'error': str(err)})
-            yield send_sse_error(err)
+            yield sse_error(err)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return EventSourceResponse(event_generator())
 
 
 @knowledge_router.get('/categories')
