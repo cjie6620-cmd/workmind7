@@ -21,7 +21,7 @@ from ...utils.logger import logger
 SIMILARITY_THRESHOLD = 0.3
 
 # RAG 系统提示词
-RAG_SYSTEM = """你是 WorkMind AI 知识库助手。
+RAG_SYSTEM = """你是 Mr.Chen AI 知识库助手。
 
 规则：
 1. 只根据下方提供的参考文档回答问题，不使用文档之外的知识

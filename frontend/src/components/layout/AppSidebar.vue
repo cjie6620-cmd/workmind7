@@ -5,7 +5,7 @@
     <!-- Logo 区域 -->
     <div class="sidebar-logo">
       <el-icon class="logo-icon"><Briefcase /></el-icon>
-      <span class="logo-text">WorkMind</span>
+      <span class="logo-text">Mr.Chen</span>
     </div>
 
     <!-- 主菜单 -->

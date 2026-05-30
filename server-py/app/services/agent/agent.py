@@ -28,7 +28,7 @@ from .tools import all_tools
 from ...utils.logger import logger
 
 # Agent 系统提示词：定义角色、可用工具、工作原则
-AGENT_SYSTEM = """你是 WorkMind AI 任务助手，专门处理办公场景的复杂任务。
+AGENT_SYSTEM = """你是 Mr.Chen AI 任务助手，专门处理办公场景的复杂任务。
 
 可用工具：
 - web_search：搜索最新技术资讯和信息

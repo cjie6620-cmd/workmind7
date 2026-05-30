@@ -20,8 +20,8 @@
 
       <!-- 用户头像（演示用） -->
       <div class="user-info">
-        <div class="user-avatar">大</div>
-        <span class="user-name">大伟</span>
+        <div class="user-avatar">C</div>
+        <span class="user-name">Mr.Chen</span>
       </div>
     </div>
   </header>
@@ -48,7 +48,7 @@ const pageMeta = {
 
 const currentMeta = computed(() => {
   const path = route.path
-  return pageMeta[path] || pageMeta[Object.keys(pageMeta).find(k => path.startsWith(k))] || { title: 'WorkMind', icon: 'Grid' }
+  return pageMeta[path] || pageMeta[Object.keys(pageMeta).find(k => path.startsWith(k))] || { title: 'Mr.Chen', icon: 'Grid' }
 })
 
 // 预算预警（超过日预算80%时显示）

@@ -1,5 +1,5 @@
 """
-WorkMind AI Server - Python Edition
+WorkMind AI Server - Python Edition  →  Mr.Chen AI Server
 
 服务端入口：注册中间件、路由，启动 FastAPI 服务。
 采用 lifespan 上下文管理器处理启动和关闭逻辑。
@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f'[WARN] 配置种子数据初始化失败: {e}', file=sys.stderr)
 
-    print(f'\nWorkMind Server started', file=sys.stderr)
+    print(f'\nMr.Chen Server started', file=sys.stderr)
     print(f'   URL: http://localhost:{config["app"]["port"]}', file=sys.stderr)
     print(f'   Health: http://localhost:{config["app"]["port"]}/health\n', file=sys.stderr)
     yield
@@ -101,8 +101,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title='WorkMind Server',
-    description='WorkMind AI 智能办公助手 - Python 版',
+    title='Mr.Chen Server',
+    description='Mr.Chen AI 智能办公助手 - Python 版',
     version='1.0.0',
     lifespan=lifespan,
 )

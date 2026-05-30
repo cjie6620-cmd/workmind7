@@ -58,7 +58,7 @@ const router = createRouter({
 
 // 路由切换时更新页面 title
 router.afterEach((to) => {
-  document.title = `${to.meta.title || 'WorkMind'} — WorkMind AI`
+  document.title = `${to.meta.title || 'Mr.Chen'} — Mr.Chen AI`
 })
 
 export default router

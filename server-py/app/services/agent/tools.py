@@ -218,7 +218,7 @@ async def write_report(title: str, content: str, format: str = 'markdown') -> st
     """
     logger.info('tool:write_report', {'title': title, 'format': format})
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    report = f'# {title}\n\n> 生成时间：{timestamp}\n\n{content}\n\n---\n*由 WorkMind AI Agent 自动生成*'
+    report = f'# {title}\n\n> 生成时间：{timestamp}\n\n{content}\n\n---\n*由 Mr.Chen AI Agent 自动生成*'
 
     # 持久化保存（Redis 不可用时仅影响列表查询，不影响工具返回）
     from .report_store import save_report

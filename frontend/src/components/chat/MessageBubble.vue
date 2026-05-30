@@ -5,7 +5,7 @@
     <!-- 用户消息 -->
     <div v-if="message.role === 'user'" class="user-msg">
       <div class="bubble user-bubble">{{ message.content }}</div>
-      <div class="user-avatar">我</div>
+      <div class="user-avatar">C</div>
     </div>
 
     <!-- AI 消息 -->
