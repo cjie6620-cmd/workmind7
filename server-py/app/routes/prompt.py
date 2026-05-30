@@ -3,7 +3,7 @@ Prompt 调试路由模块
 
 提供 Prompt 模板管理和测试功能：
 - POST /test/stream: 测试 Prompt 效果（SSE 流式）
-- POST /ab-test: A/B 测试对比两个 Prompt
+- POST /ab-test/stream: A/B 测试对比两个 Prompt（SSE 流式）
 - GET /templates: 获取模板列表
 - GET /templates/{template_id}: 获取模板详情
 - POST /templates: 创建模板
@@ -17,6 +17,7 @@ Prompt 调试路由模块
 - 模板版本管理
 """
 
+import asyncio
 import time as _time
 
 from fastapi import APIRouter
@@ -96,16 +97,22 @@ async def prompt_test_stream(req: dict):
     return EventSourceResponse(event_generator())
 
 
-@prompt_router.post('/ab-test')
-async def prompt_ab_test(req: dict):
+@prompt_router.post('/ab-test/stream')
+async def prompt_ab_test_stream(req: dict):
     """
-    A/B 测试接口
+    A/B 测试接口（SSE 流式）
 
-    第一步：同一问题，两个 Prompt 分别生成回答
-    第二步：评估两个回答的质量（相关性、准确性、清晰度、简洁性）
-    第三步：综合比较，选出更优的 Prompt
+    第一步：同一问题，两个 Prompt 分别流式生成回答（真正并行）
+    第二步：评估两个回答的质量
+    第三步：返回评分结果
 
-    返回：两个回答 + 评分 + 获胜者
+    SSE 事件：
+    - start: 流开始
+    - token_a/token_b: 模型 A/B 的 token
+    - done_a/done_b: 模型 A/B 完成
+    - scoring: 评分开始
+    - eval_done: 评分结果
+    - done: 整个流结束
     """
     question = (req.get('question') or '').strip()
     system_prompt_a = req.get('systemPromptA', '')
@@ -116,24 +123,69 @@ async def prompt_ab_test(req: dict):
     if not question:
         return JSONResponse(status_code=400, content={'error': {'message': '测试问题不能为空'}})
 
-    try:
-        test_model = create_chat_model(temperature=temperature)
+    # 构建消息
+    msgs_a = ([SystemMessage(system_prompt_a)] if system_prompt_a else []) + [HumanMessage(question)]
+    msgs_b = ([SystemMessage(system_prompt_b)] if system_prompt_b else []) + [HumanMessage(question)]
 
-        # 并行调用两个 Prompt
-        msgs_a = ([SystemMessage(system_prompt_a)] if system_prompt_a else []) + [HumanMessage(question)]
-        msgs_b = ([SystemMessage(system_prompt_b)] if system_prompt_b else []) + [HumanMessage(question)]
-        res_a, res_b = await test_model.ainvoke(msgs_a), await test_model.ainvoke(msgs_b)
+    # 创建两个独立模型实例（streaming=True）
+    model_a = create_chat_model(temperature=temperature, streaming=True)
+    model_b = create_chat_model(temperature=temperature, streaming=True)
 
-        answer_a = res_a.content
-        answer_b = res_b.content
+    queue = asyncio.Queue()
+    done_event = asyncio.Event()
 
-        # 评分对比
-        evaluation = await score_ab_test(question, answer_a, answer_b)
+    async def stream_side(side, model, messages):
+        """流式消费单个模型，token 推入共享 queue"""
+        try:
+            full_reply, input_tokens, output_tokens = '', 0, 0
+            start_ms = int(_time.time() * 1000)
+            async for chunk in model.astream(messages):
+                if chunk.content:
+                    full_reply += chunk.content
+                    await queue.put(sse_event(f'token_{side}', {'token': chunk.content}))
+                if chunk.usage_metadata:
+                    input_tokens = chunk.usage_metadata.get('input_tokens', 0) or 0
+                    output_tokens = chunk.usage_metadata.get('output_tokens', 0) or 0
+            await queue.put(sse_event(f'done_{side}', {
+                'latencyMs': int(_time.time() * 1000) - start_ms,
+                'inputTokens': input_tokens,
+                'outputTokens': output_tokens,
+            }))
+            return full_reply
+        except Exception as err:
+            await queue.put(sse_event(f'done_{side}', {'error': str(err)}))
+            return ''
 
-        return {'answerA': answer_a, 'answerB': answer_b, 'evaluation': evaluation}
-    except Exception as err:
-        logger.error('ab test error', {'error': str(err)})
-        return JSONResponse(status_code=500, content={'error': {'message': '测试失败，请重试'}})
+    async def run():
+        try:
+            # 并行流式：两个 astream 同时执行
+            answer_a, answer_b = await asyncio.gather(
+                stream_side('a', model_a, msgs_a),
+                stream_side('b', model_b, msgs_b),
+            )
+            # 评分阶段
+            if answer_a and answer_b:
+                await queue.put(sse_event('scoring', {}))
+                evaluation = await score_ab_test(question, answer_a, answer_b)
+                await queue.put(sse_event('eval_done', evaluation))
+        except Exception as err:
+            logger.error('ab stream error', {'error': str(err)})
+        finally:
+            await queue.put(sse_event('done', {}))
+            done_event.set()
+
+    asyncio.create_task(run())
+
+    async def event_generator():
+        yield sse_event('start', {})
+        while not done_event.is_set() or not queue.empty():
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                yield item
+            except asyncio.TimeoutError:
+                continue
+
+    return EventSourceResponse(event_generator())
 
 
 # ── 模板 CRUD ───────────────────────────────────────────────

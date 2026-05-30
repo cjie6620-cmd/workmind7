@@ -9,6 +9,7 @@ Prompt 服务模块
 - score_ab_test: A/B 测试评分
 """
 
+import asyncio
 from datetime import datetime
 from typing import List, Literal, Optional
 
@@ -174,14 +175,17 @@ async def score_ab_test(question, answer_a, answer_b):
 {"relevance": int, "accuracy": int, "clarity": int, "conciseness": int, "overall": int, "winner": "A"|"B"|"tie", "reason": str}"""
 
     # 并行评估两个回答
-    eval_a, eval_b = await parse_with_retry(
-        score_model,
-        [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_a}')],
-        ScoreResult,
-    ), await parse_with_retry(
-        score_model,
-        [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_b}')],
-        ScoreResult,
+    eval_a, eval_b = await asyncio.gather(
+        parse_with_retry(
+            score_model,
+            [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_a}')],
+            ScoreResult,
+        ),
+        parse_with_retry(
+            score_model,
+            [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_b}')],
+            ScoreResult,
+        ),
     )
 
     # 综合比较

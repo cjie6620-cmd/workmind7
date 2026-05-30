@@ -92,6 +92,7 @@
           <div v-if="ps.abResult.answerA" class="ab-answer">
             <div class="ab-answer-label">A 的回答</div>
             <div class="ab-answer-text" v-html="renderMd(ps.abResult.answerA)" />
+            <span v-if="ps.abResult.streamingA" class="cursor-blink">▎</span>
             <div v-if="ps.abResult.evaluation?.scoreA" class="score-row">
               <span v-for="k in scoreKeys" :key="k" class="score-chip">
                 {{ scoreLabelMap[k] }}: {{ ps.abResult.evaluation.scoreA[k] }}
@@ -106,6 +107,7 @@
           <div v-if="ps.abResult.answerB" class="ab-answer">
             <div class="ab-answer-label">B 的回答</div>
             <div class="ab-answer-text" v-html="renderMd(ps.abResult.answerB)" />
+            <span v-if="ps.abResult.streamingB" class="cursor-blink">▎</span>
             <div v-if="ps.abResult.evaluation?.scoreB" class="score-row">
               <span v-for="k in scoreKeys" :key="k" class="score-chip">
                 {{ scoreLabelMap[k] }}: {{ ps.abResult.evaluation.scoreB[k] }}
@@ -114,6 +116,9 @@
           </div>
           <div v-if="ps.abResult.evaluation?.winner==='B'" class="winner-badge"><el-icon><Trophy /></el-icon> 胜出</div>
         </div>
+      </div>
+      <div v-if="ps.abResult.scoring" class="ab-scoring">
+        <el-icon class="is-loading"><Loading /></el-icon> 正在评分...
       </div>
       <div v-if="ps.abResult.evaluation" class="ab-verdict">
         <span>{{ ps.abResult.evaluation.winner === 'tie' ? '效果相当' : (ps.abResult.evaluation.winner === 'A' ? 'A 更好' : 'B 更好') }}</span>
@@ -280,6 +285,9 @@ onMounted(() => ps.loadTemplates())
 .winner-badge { position:absolute; top:12px; right:12px; display:inline-flex; align-items:center; gap:3px; font-size:12px; font-weight:700; color:var(--color-success); }
 .ab-verdict { display:flex; align-items:center; gap:var(--space-md); padding:var(--space-md) var(--space-lg); background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); font-size:14px; font-weight:600; color:var(--color-text); }
 .verdict-reason { font-size:12px; color:var(--color-text-sub); font-weight:400; }
+.ab-scoring { display:flex; align-items:center; gap:8px; padding:12px 16px; color:var(--color-text-secondary); margin-bottom:var(--space-lg); }
+.cursor-blink { animation:blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity:0; } }
 .template-manager { display:flex; flex:1; overflow:hidden; }
 .tpl-list-panel { width:260px; flex-shrink:0; background:var(--color-surface); border-right:1px solid var(--color-border); display:flex; flex-direction:column; overflow:hidden; }
 .tpl-list-header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; font-size:13px; font-weight:600; border-bottom:1px solid var(--color-border-light); flex-shrink:0; }

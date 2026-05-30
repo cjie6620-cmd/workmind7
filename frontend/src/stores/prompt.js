@@ -84,7 +84,12 @@ export const usePromptStore = defineStore('prompt', () => {
   const abResult = reactive({
     answerA:    '',
     answerB:    '',
-    evaluation: null,  // { scoreA, scoreB, winner, reason }
+    evaluation: null,    // { scoreA, scoreB, winner, reason }
+    streamingA: false,   // A 侧流式中
+    streamingB: false,   // B 侧流式中
+    scoring:    false,   // 评分中
+    latencyMsA: 0,
+    latencyMsB: 0,
   })
 
   const abTesting = ref(false)
@@ -92,26 +97,62 @@ export const usePromptStore = defineStore('prompt', () => {
   async function runAbTest() {
     if (!abConfig.question.trim() || abTesting.value) return
     abTesting.value = true
-    abResult.answerA    = ''
-    abResult.answerB    = ''
+    abResult.answerA = ''
+    abResult.answerB = ''
     abResult.evaluation = null
+    abResult.streamingA = true
+    abResult.streamingB = true
+    abResult.scoring = false
 
-    try {
-      const data = await http.post('/prompt/ab-test', {
+    await fetchStream(
+      '/api/prompt/ab-test/stream',
+      {
         question:      abConfig.question,
         systemPromptA: abConfig.systemPromptA,
         systemPromptB: abConfig.systemPromptB,
         temperature:   abConfig.temperature,
         maxTokens:     abConfig.maxTokens,
-      })
-      abResult.answerA    = data.answerA
-      abResult.answerB    = data.answerB
-      abResult.evaluation = data.evaluation
-    } catch (err) {
-      appStore.toast.error('A/B 测试失败，请重试')
-    } finally {
-      abTesting.value = false
-    }
+      },
+      {
+        onEvent(event, data) {
+          switch (event) {
+            case 'token_a': abResult.answerA += data.token; break
+            case 'token_b': abResult.answerB += data.token; break
+            case 'done_a':
+              abResult.streamingA = false
+              abResult.latencyMsA = data.latencyMs || 0
+              if (data.error) appStore.toast.error('模型 A 出错：' + data.error)
+              break
+            case 'done_b':
+              abResult.streamingB = false
+              abResult.latencyMsB = data.latencyMs || 0
+              if (data.error) appStore.toast.error('模型 B 出错：' + data.error)
+              break
+            case 'scoring':
+              abResult.scoring = true
+              break
+            case 'eval_done':
+              abResult.evaluation = data
+              abResult.scoring = false
+              break
+          }
+        },
+        onDone() {
+          abResult.streamingA = false
+          abResult.streamingB = false
+          abResult.scoring = false
+          abTesting.value = false
+        },
+        onError(err) {
+          abResult.streamingA = false
+          abResult.streamingB = false
+          abTesting.value = false
+          appStore.toast.error(err.message || 'A/B 测试失败')
+        },
+      }
+    )
+
+    abTesting.value = false
   }
 
   // ── 模板管理 ────────────────────────────────────────────────
