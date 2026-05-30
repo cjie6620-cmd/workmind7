@@ -12,7 +12,7 @@
 """
 
 import jieba
-from langchain_community.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
