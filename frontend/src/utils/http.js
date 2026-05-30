@@ -5,7 +5,7 @@ import { useAppStore } from '@/stores/app.js'
 
 // 创建 axios 实例
 const http = axios.create({
-  baseURL: '/api',           // 配合 vite proxy，开发时自动转发到 :3000
+  baseURL: '/api',           // 配合 vite proxy，开发时自动转发到 :3001
   timeout: 30000,            // 普通请求 30s 超时
 })
 
@@ -55,7 +55,7 @@ export async function fetchStream(url, body, { onToken, onEvent, onDone, onError
   try {
     // 开发模式直连后端，绕过 Vite 代理对 SSE 的缓冲
     const fetchUrl = import.meta.env.DEV
-      ? url.replace('/api', 'http://localhost:3000/api')
+      ? url.replace('/api', 'http://localhost:3001/api')
       : url
     const response = await fetch(fetchUrl, {
       method: 'POST',

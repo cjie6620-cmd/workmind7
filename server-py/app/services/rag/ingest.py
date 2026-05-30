@@ -20,6 +20,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..model import get_embeddings
 from .pgvector_store import get_vector_store
+from .hybrid_retriever import mark_bm25_stale
 from ...core.database import async_session_factory
 from ...models.entities import RagChunk, Document
 from ...utils.logger import logger
@@ -294,6 +295,9 @@ async def ingest_document(file_path, file_name, title=None, category='通用'):
     except OSError:
         pass
 
+    # 8. 标记 BM25 索引需要重建
+    mark_bm25_stale()
+
     logger.info('rag: ingest complete', {'docId': doc_id, 'chunks': len(chunks)})
     return doc_meta
 
@@ -313,4 +317,8 @@ async def delete_document(doc_id):
         await session.commit()
 
     del _doc_registry[doc_id]
+
+    # 标记 BM25 索引需要重建
+    mark_bm25_stale()
+
     logger.info('rag: document deleted', {'docId': doc_id})

@@ -2,23 +2,22 @@
 RAG 查询模块
 
 RAG（Retrieval Augmented Generation）流程：
-1. retrieve_docs: 使用 pgvector 检索相关文档
+1. retrieve_docs: 混合检索（BM25 + 向量 + RRF 融合）+ CrossEncoder 精排
 2. rag_query_stream: 基于检索结果生成回答
 
-特点：
-- 使用 PostgreSQL + pgvector 进行向量检索
-- 相似度阈值过滤（默认 0.3）
-- 支持按分类筛选
+检索策略：
+- 第一阶段：BM25 关键词召回 + pgvector 向量召回 → EnsembleRetriever RRF 融合
+- 第二阶段：CrossEncoder（bge-reranker-v2-m3）精排重打分
+- 阈值过滤后返回最终结果
 """
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from ..model import get_chat_model, get_embeddings
-from .pgvector_store import get_vector_store
+from ..model import get_chat_model
+from .hybrid_retriever import get_hybrid_retriever
+from .reranker import get_reranker
+from ...config import config
 from ...utils.logger import logger
-
-# 相似度阈值：低于此值的文档不返回
-SIMILARITY_THRESHOLD = 0.3
 
 # RAG 系统提示词
 RAG_SYSTEM = """你是 Mr.Chen AI 知识库助手。
@@ -30,46 +29,48 @@ RAG_SYSTEM = """你是 Mr.Chen AI 知识库助手。
 4. 在回答末尾用 【来源：文档名】 标注使用了哪些文档"""
 
 
-async def retrieve_docs(question, category=None, k=4):
+async def retrieve_docs(question, category=None, k=None):
     """
-    检索相关文档
+    混合检索 + 精排
 
     参数：
     - question: 查询问题
     - category: 可选，按文档分类筛选
-    - k: 返回前 k 个结果
+    - k: 返回结果数量（默认从配置读取）
 
-    返回：相关文档列表（已按相似度排序）
+    返回：精排后的文档列表（按 rerank_score 降序）
     """
-    # 1. 将问题向量化
-    query_vec = await get_embeddings().aembed_query(question)
+    rag_config = config['rag']
+    if k is None:
+        k = rag_config['final_k']
 
-    # 2. 使用 pgvector 搜索
-    vs = await get_vector_store()
-    results = await vs.similarity_search_with_score(
-        query_vector=query_vec,
-        k=k,
-        category=category,
-    )
+    # ① 混合检索（BM25 + 向量 + RRF 融合）
+    retriever = await get_hybrid_retriever(category)
+    candidates = await retriever.ainvoke(question)
 
-    # 3. 过滤低相似度结果
-    relevant = [(doc, score) for doc, score in results if score > SIMILARITY_THRESHOLD]
+    if not candidates:
+        logger.info('rag: no candidates from hybrid retrieval', {
+            'question': question[:40],
+        })
+        return []
 
-    logger.info('rag: retrieved docs', {
+    logger.info('rag: hybrid retrieval done', {
         'question': question[:40],
-        'total': len(results),
-        'relevant': len(relevant),
-        'topScore': f'{results[0][1]:.3f}' if results else 'N/A',
+        'candidates': len(candidates),
     })
 
-    return [{
-        'content': doc['pageContent'],
-        'score': round(score, 3),
-        'title': doc['metadata'].get('title', '未知来源'),
-        'docId': doc['metadata'].get('docId'),
-        'category': doc['metadata'].get('category'),
-        'preview': doc['pageContent'][:80].replace('\n', ' ') + '...',
-    } for doc, score in relevant]
+    # ② CrossEncoder 精排
+    reranker = get_reranker()
+    ranked = reranker.rerank(question, candidates, top_n=k)
+
+    logger.info('rag: retrieval complete', {
+        'question': question[:40],
+        'candidates': len(candidates),
+        'results': len(ranked),
+        'topScore': f'{ranked[0]["rerank_score"]:.4f}' if ranked else 'N/A',
+    })
+
+    return ranked
 
 
 async def rag_query_stream(question, options=None):

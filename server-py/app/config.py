@@ -38,7 +38,7 @@ def _split_env(key, default_list):
 # 配置字典 - 应用层统一配置入口
 config = {
     'app': {
-        'port': int(_env('PORT', '3000')),
+        'port': int(_env('PORT', '3001')),
         'env': _env('NODE_ENV', 'development'),
         'allowed_origins': _split_env('ALLOWED_ORIGINS', ['http://localhost:5173']),
     },
@@ -48,6 +48,15 @@ config = {
         'base_url': 'https://api.deepseek.com/v1',
         'embedding_model': _env('EMBEDDING_MODEL', 'D:/huggingface_cache/modelscope/Xorbits/bge-m3'),
         'embedding_device': _env('EMBEDDING_DEVICE', 'cpu'),
+    },
+    'rag': {
+        'reranker_model': _env('RERANKER_MODEL', 'BAAI/bge-reranker-v2-m3'),
+        'reranker_device': _env('RERANKER_DEVICE', 'cpu'),
+        'vector_recall_k': int(_env('VECTOR_RECALL_K', '20')),
+        'bm25_recall_k': int(_env('BM25_RECALL_K', '20')),
+        'rrf_top_n': int(_env('RRF_TOP_N', '10')),
+        'rerank_threshold': float(_env('RERANK_THRESHOLD', '0.2')),
+        'final_k': int(_env('FINAL_K', '4')),
     },
     'chroma': {
         'url': _env('CHROMA_URL', 'http://localhost:8000'),
