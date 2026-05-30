@@ -402,5 +402,5 @@ uvicorn app.main:app --reload --port 3000   # 开发模式（自动重载）
 ---
 
 <p align="center">
-  Made with ❤️ by <a href="https://github.com/your-username">WorkMind Team</a>
+  Made with ❤️ by <a href="https://github.com/cjie6620-cmd">Mr. Chen</a>
 </p>
