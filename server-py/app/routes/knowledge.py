@@ -25,6 +25,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..services.rag.ingest import ingest_document, get_doc_registry, delete_document
 from ..services.rag.query import rag_query_stream
+from ..services.chat.memory import save_message, get_history_db, list_sessions, get_session_info
 from ..utils.sse import sse_event, sse_error
 from ..utils.file_validate import validate_file, validate_ext, MAX_FILE_SIZE
 from ..utils.logger import logger
@@ -236,15 +237,21 @@ async def rag_stream(req: dict):
     第二步：检索知识库相关文档
     第三步：流式生成回答（含来源引用）
     第四步：推送完成事件
+    第五步：持久化问答记录到 conversations 表
     """
     question = (req.get('question') or '').strip()
     category = req.get('category')
+    session_id = req.get('sessionId') or f'knowledge_{uuid.uuid4().hex[:12]}'
 
     if not question:
         return JSONResponse(status_code=400, content={'error': {'message': '问题不能为空'}})
 
     async def event_generator():
+        full_answer = ''
         try:
+            # 持久化用户问题
+            await save_message(session_id, 'user', question)
+
             yield sse_event('status', {'message': '正在检索相关文档...'})
 
             result = await rag_query_stream(question, {'category': category})
@@ -253,19 +260,30 @@ async def rag_stream(req: dict):
             yield sse_event('sources', {'sources': sources})
 
             if not sources:
-                yield sse_event('token', {'token': '知识库中未找到相关内容，请尝试上传相关文档后再提问。'})
+                full_answer = '知识库中未找到相关内容，请尝试上传相关文档后再提问。'
+                yield sse_event('token', {'token': full_answer})
                 yield sse_event('done', {})
+                # 持久化 AI 回答
+                await save_message(session_id, 'assistant', full_answer)
                 return
 
             yield sse_event('status', {'message': '正在生成回答...'})
 
             async for token in result['stream_answer']():
+                full_answer += token
                 yield sse_event('token', {'token': token})
 
-            yield sse_event('done', {})
+            # 持久化 AI 回答（含来源信息）
+            await save_message(session_id, 'assistant', full_answer,
+                               metadata={'sources': [{'title': s.get('title')} for s in sources]})
+
+            yield sse_event('done', {'sessionId': session_id})
             logger.info('knowledge: query done', {'question': question[:40], 'sources': len(sources)})
         except Exception as err:
             logger.error('knowledge: query error', {'error': str(err)})
+            # 即使出错也保存不完整的回答
+            if full_answer:
+                await save_message(session_id, 'assistant', full_answer)
             yield sse_error(err)
 
     return EventSourceResponse(event_generator())
@@ -281,3 +299,53 @@ async def get_categories():
             *[{'value': c, 'label': c} for c in cats],
         ]
     }
+
+
+@knowledge_router.get('/history/{session_id}')
+async def get_knowledge_history(session_id: str):
+    """获取知识库问答历史"""
+    info = await get_session_info(session_id)
+    return info
+
+
+@knowledge_router.get('/sessions')
+async def get_knowledge_sessions():
+    """获取知识库所有会话列表"""
+    from sqlalchemy import select, func
+    from ..core.database import async_session_factory
+    from ..models.entities import Conversation
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(
+                Conversation.session_id,
+                func.count(Conversation.id).label('msg_count'),
+                func.min(Conversation.created_at).label('created_at'),
+            )
+            .where(Conversation.session_id.like('knowledge_%'))
+            .group_by(Conversation.session_id)
+            .order_by(func.min(Conversation.created_at).desc())
+        )
+        rows = result.all()
+
+        sessions = []
+        for row in rows:
+            sid = row[0]
+            # 取第一条用户消息作为标题
+            r = await session.execute(
+                select(Conversation.content)
+                .where(Conversation.session_id == sid)
+                .where(Conversation.role == 'user')
+                .order_by(Conversation.created_at)
+                .limit(1)
+            )
+            first_msg = r.scalar_one_or_none()
+            title = first_msg[:30] + ('...' if first_msg and len(first_msg) > 30 else '') if first_msg else '知识库问答'
+            sessions.append({
+                'id': sid,
+                'title': title,
+                'messageCount': row[1],
+                'createdAt': row[2].isoformat() if row[2] else None,
+            })
+
+    return {'sessions': sessions}

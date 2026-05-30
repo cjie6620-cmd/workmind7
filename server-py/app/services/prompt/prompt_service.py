@@ -2,7 +2,7 @@
 Prompt 服务模块
 
 提供 Prompt 模板管理和评分功能：
-- list_templates: 获取模板列表
+- list_templates: 获取模板列表（从数据库）
 - get_template: 获取模板详情
 - save_template: 创建/更新模板（含版本管理）
 - delete_template: 删除模板
@@ -17,121 +17,119 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from ..model import create_chat_model
+from ..config.config_service import (
+    list_configs as db_list,
+    get_config as db_get,
+    create_config as db_create,
+    update_config as db_update,
+    delete_config as db_delete,
+)
 from ...utils.llm_parse import parse_with_retry
 
 score_model = create_chat_model(temperature=0)
 
-# ── 模板存储 ────────────────────────────────────────────────
 
-# 内存存储模板（生产环境建议用数据库）
-template_store = {}
-_template_seq = 0
+# ── 模板 CRUD（数据库存储）───────────────────────────────────
 
-# 内置默认模板
-default_templates = [
-    {
-        'id': 't_default_1',
-        'name': '前端助手',
-        'systemPrompt': '你是前端开发专家，精通 Vue3、React、TypeScript。回答简洁准确，必要时给代码示例。',
-        'description': '通用前端技术问答',
-        'tags': ['前端', '技术'],
-        'createdAt': datetime.now().isoformat(),
-        'versions': [],
-    },
-    {
-        'id': 't_default_2',
-        'name': '代码 Review',
-        'systemPrompt': """你是资深代码评审专家。审查代码时，按以下顺序输出：
-1. 【总体评价】一句话概括
-2. 【问题列表】按严重程度排序，每条格式：[严重/一般/建议] 具体问题
-3. 【优化建议】具体的改进代码示例
-语气专业，直指问题，不废话。""",
-        'description': '代码审查专用',
-        'tags': ['代码', '审查'],
-        'createdAt': datetime.now().isoformat(),
-        'versions': [],
-    },
-    {
-        'id': 't_default_3',
-        'name': '简洁问答',
-        'systemPrompt': '用最简洁的语言回答问题，不超过3句话，不用废话开场。',
-        'description': '简短精准的回答风格',
-        'tags': ['简洁'],
-        'createdAt': datetime.now().isoformat(),
-        'versions': [],
-    },
-]
-
-for t in default_templates:
-    template_store[t['id']] = t
+async def list_templates() -> list[dict]:
+    """获取所有 Prompt 模板（从数据库，按更新时间倒序）"""
+    configs = await db_list('prompt')
+    # 转换为前端兼容的模板格式
+    templates = []
+    for c in configs:
+        cj = c['configJson']
+        templates.append({
+            'id': c['id'],
+            'name': c['name'],
+            'systemPrompt': cj.get('systemPrompt', ''),
+            'description': cj.get('description', ''),
+            'tags': cj.get('tags', []),
+            'createdAt': c['createdAt'],
+            'updatedAt': c['updatedAt'],
+            'versions': cj.get('versions', []),
+        })
+    return templates
 
 
-def list_templates():
-    """获取所有模板（按创建时间倒序）"""
-    return sorted(template_store.values(), key=lambda t: t['createdAt'], reverse=True)
-
-
-def get_template(template_id):
+async def get_template(template_id: str) -> Optional[dict]:
     """获取指定模板"""
-    return template_store.get(template_id)
+    c = await db_get(template_id)
+    if not c or c['configType'] != 'prompt':
+        return None
+    cj = c['configJson']
+    return {
+        'id': c['id'],
+        'name': c['name'],
+        'systemPrompt': cj.get('systemPrompt', ''),
+        'description': cj.get('description', ''),
+        'tags': cj.get('tags', []),
+        'createdAt': c['createdAt'],
+        'updatedAt': c['updatedAt'],
+        'versions': cj.get('versions', []),
+    }
 
 
-def save_template(name, system_prompt, description='', tags=None, existing_id=None):
+async def save_template(name: str, system_prompt: str, description: str = '', tags: list = None, existing_id: str = None) -> dict:
     """
     创建或更新模板
 
-    参数：
-    - name: 模板名称
-    - system_prompt: 提示词内容
-    - description: 描述
-    - tags: 标签
-    - existing_id: 存在则更新，不存在则创建
-
-    更新时会保存历史版本（最多保留 10 个）
+    更新时自动保存历史版本（最多保留 10 个）
     """
-    global _template_seq
     tags = tags or []
-    template_id = existing_id or f't_{int(datetime.now().timestamp() * 1000)}_{_template_seq}'
-    _template_seq += 1
 
-    existing = template_store.get(template_id)
+    if existing_id:
+        # 更新：先获取现有数据，追加版本历史
+        existing = await db_get(existing_id)
+        if not existing:
+            raise ValueError('模板不存在')
 
-    template = {
-        'id': template_id,
-        'name': name,
-        'systemPrompt': system_prompt,
-        'description': description,
-        'tags': tags,
-        'createdAt': existing['createdAt'] if existing else datetime.now().isoformat(),
-        'updatedAt': datetime.now().isoformat(),
-        # 保存历史版本
-        'versions': [
-            *(existing.get('versions', []) if existing else []),
+        old_cj = existing['configJson']
+        old_versions = old_cj.get('versions', [])
+
+        # 追加版本历史
+        new_versions = [
+            *old_versions,
             {
-                'version': len(existing.get('versions', [])) + 1 if existing else 1,
-                'systemPrompt': existing['systemPrompt'] if existing else system_prompt,
+                'version': len(old_versions) + 1,
+                'systemPrompt': old_cj.get('systemPrompt', ''),
                 'savedAt': datetime.now().isoformat(),
             },
-        ][-10:],  # 最多保留 10 个版本
+        ][-10:]  # 最多保留 10 个版本
+
+        config_json = {
+            'systemPrompt': system_prompt,
+            'description': description,
+            'tags': tags,
+            'versions': new_versions,
+        }
+        result = await db_update(existing_id, name=name, config_json=config_json)
+    else:
+        # 新建
+        config_json = {
+            'systemPrompt': system_prompt,
+            'description': description,
+            'tags': tags,
+            'versions': [],
+        }
+        result = await db_create('prompt', name, config_json)
+
+    # 转换为前端兼容格式
+    cj = result['configJson']
+    return {
+        'id': result['id'],
+        'name': result['name'],
+        'systemPrompt': cj.get('systemPrompt', ''),
+        'description': cj.get('description', ''),
+        'tags': cj.get('tags', []),
+        'createdAt': result['createdAt'],
+        'updatedAt': result['updatedAt'],
+        'versions': cj.get('versions', []),
     }
 
-    template_store[template_id] = template
-    return template
 
-
-def delete_template(template_id):
-    """
-    删除模板
-
-    规则：
-    - 内置模板（t_default_*）不可删除
-    - 不存在的模板抛出异常
-    """
-    if template_id.startswith('t_default_'):
-        raise ValueError('内置模板不能删除')
-    if template_id not in template_store:
-        raise ValueError('模板不存在')
-    del template_store[template_id]
+async def delete_template(template_id: str):
+    """删除模板"""
+    await db_delete(template_id)
 
 
 # ── A/B 评分 ────────────────────────────────────────────────

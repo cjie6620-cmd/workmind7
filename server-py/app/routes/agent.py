@@ -17,6 +17,7 @@ Agent 基于 ReAct 模式（Reasoning + Acting）：
 """
 
 import asyncio
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter
@@ -24,6 +25,8 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..services.agent.agent import run_agent, get_tool_list
+from ..services.chat.memory import save_message, get_history_db, get_session_info
+from ..services.config.config_service import list_configs as list_agent_configs
 from ..middleware import check_injection
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
@@ -48,6 +51,7 @@ async def agent_run(req: dict):
     - done: 执行完成
     """
     task = (req.get('task') or '').strip()
+    session_id = req.get('sessionId') or f'agent_{uuid.uuid4().hex[:12]}'
 
     # 参数校验
     if not task:
@@ -60,27 +64,38 @@ async def agent_run(req: dict):
     # 使用队列 + 事件机制实现异步通信
     queue = asyncio.Queue()
     done_event = asyncio.Event()
+    full_answer = []  # 收集完整回答
 
     async def collect_event(event_type, data):
         """收集 Agent 发出的事件到队列"""
+        if event_type == 'token':
+            full_answer.append(data.get('token', ''))
         await queue.put(sse_event(event_type, data))
 
     async def run_task():
         """后台执行 Agent 任务"""
+        full_answer = ''
         try:
+            # 持久化用户任务
+            await save_message(session_id, 'user', task)
+
             await run_agent(task, collect_event)
         except Exception as err:
             logger.error('agent route: task failed', {'error': str(err)})
             await queue.put(sse_error(err))
         finally:
             done_event.set()
+            # 持久化 AI 回答
+            answer_text = ''.join(full_answer)
+            if answer_text:
+                await save_message(session_id, 'assistant', answer_text)
 
     # 异步启动任务，不阻塞响应
     asyncio.create_task(run_task())
 
     async def event_generator():
         """SSE 事件生成器"""
-        yield sse_event('start', {'task': task, 'timestamp': datetime.now().isoformat()})
+        yield sse_event('start', {'task': task, 'sessionId': session_id, 'timestamp': datetime.now().isoformat()})
         # 循环直到任务完成且队列清空
         while not done_event.is_set() or not queue.empty():
             try:
@@ -88,6 +103,7 @@ async def agent_run(req: dict):
                 yield item
             except asyncio.TimeoutError:
                 continue
+        yield sse_event('done', {'sessionId': session_id})
 
     return EventSourceResponse(event_generator())
 
@@ -96,6 +112,28 @@ async def agent_run(req: dict):
 async def agent_tools():
     """获取所有可用工具列表（名称、标签、描述）"""
     return {'tools': get_tool_list()}
+
+
+@agent_router.get('/configs')
+async def agent_config_list():
+    """获取所有 Agent 配置（从 agent_configs 表）"""
+    configs = await list_agent_configs('agent')
+    # 转换为前端可直接使用的格式
+    result = []
+    for c in configs:
+        cj = c['configJson']
+        result.append({
+            'id': c['id'],
+            'name': c['name'],
+            'description': cj.get('description', ''),
+            'systemPrompt': cj.get('systemPrompt', ''),
+            'tools': cj.get('tools', []),
+            'modelParams': cj.get('modelParams', {}),
+            'isActive': c['isActive'],
+            'version': c['version'],
+            'updatedAt': c['updatedAt'],
+        })
+    return {'configs': result}
 
 
 @agent_router.get('/examples')
@@ -179,3 +217,52 @@ async def agent_report_delete(report_id: str):
     if not ok:
         return JSONResponse(status_code=500, content={'error': {'message': '删除失败'}})
     return {'success': True}
+
+
+@agent_router.get('/history/{session_id}')
+async def get_agent_history(session_id: str):
+    """获取 Agent 任务历史"""
+    info = await get_session_info(session_id)
+    return info
+
+
+@agent_router.get('/sessions')
+async def get_agent_sessions():
+    """获取 Agent 所有会话列表"""
+    from sqlalchemy import select, func
+    from ..core.database import async_session_factory
+    from ..models.entities import Conversation
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(
+                Conversation.session_id,
+                func.count(Conversation.id).label('msg_count'),
+                func.min(Conversation.created_at).label('created_at'),
+            )
+            .where(Conversation.session_id.like('agent_%'))
+            .group_by(Conversation.session_id)
+            .order_by(func.min(Conversation.created_at).desc())
+        )
+        rows = result.all()
+
+        sessions = []
+        for row in rows:
+            sid = row[0]
+            r = await session.execute(
+                select(Conversation.content)
+                .where(Conversation.session_id == sid)
+                .where(Conversation.role == 'user')
+                .order_by(Conversation.created_at)
+                .limit(1)
+            )
+            first_msg = r.scalar_one_or_none()
+            title = first_msg[:30] + ('...' if first_msg and len(first_msg) > 30 else '') if first_msg else 'Agent 任务'
+            sessions.append({
+                'id': sid,
+                'title': title,
+                'messageCount': row[1],
+                'createdAt': row[2].isoformat() if row[2] else None,
+            })
+
+    return {'sessions': sessions}

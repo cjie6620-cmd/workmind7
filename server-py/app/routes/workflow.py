@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..services.workflow.workflows import WORKFLOW_BUILDERS, WORKFLOW_META
+from ..services.config.config_service import list_configs as list_wf_configs
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
@@ -55,7 +56,28 @@ def _get_intermediates(values, workflow_id):
 
 @workflow_router.get('/templates')
 async def get_templates():
-    """获取所有工作流模板元信息"""
+    """获取所有工作流模板元信息（优先从数据库读取，兜底用硬编码）"""
+    try:
+        configs = await list_wf_configs('workflow')
+        if configs:
+            templates = []
+            for c in configs:
+                cj = c['configJson']
+                templates.append({
+                    'id': c['name'],  # name 即 workflow_id（如 weekly_report）
+                    'title': cj.get('title', c['name']),
+                    'icon': cj.get('icon', '⚙️'),
+                    'desc': cj.get('description', ''),
+                    'inputLabel': cj.get('inputLabel', '输入'),
+                    'inputPlaceholder': cj.get('inputPlaceholder', ''),
+                    'extraField': cj.get('extraField'),
+                    'nodes': cj.get('nodes', []),
+                    'resultKey': cj.get('resultKey', 'result'),
+                })
+            return {'templates': templates}
+    except Exception:
+        pass
+    # 兜底：使用硬编码模板
     return {'templates': list(WORKFLOW_META.values())}
 
 

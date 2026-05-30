@@ -28,6 +28,18 @@
           <div v-for="t in agentStore.toolList" :key="t.name" class="tool-chip" :title="t.description">{{ t.label }}</div>
         </div>
       </div>
+      <div class="configs-section">
+        <div class="section-label">Agent 配置（{{ agentStore.agentConfigs.length }}）</div>
+        <div v-if="!agentStore.agentConfigs.length" class="config-empty">暂无已保存配置</div>
+        <div v-for="cfg in agentStore.agentConfigs" :key="cfg.id" class="config-item" @click="viewConfig(cfg)">
+          <div class="config-name">{{ cfg.name }}</div>
+          <div class="config-desc">{{ cfg.description || '无描述' }}</div>
+          <div class="config-tools">
+            <span v-for="t in cfg.tools?.slice(0, 3)" :key="t" class="tool-chip-sm">{{ t }}</span>
+            <span v-if="cfg.tools?.length > 3" class="tool-chip-sm">+{{ cfg.tools.length - 3 }}</span>
+          </div>
+        </div>
+      </div>
     </aside>
     <main class="execution-panel" ref="taskListEl">
       <div v-if="!agentStore.tasks.length" class="empty-state">
@@ -70,6 +82,42 @@
         </div>
       </div>
     </main>
+
+    <!-- 配置详情弹窗 -->
+    <div v-if="showConfigDetail && currentConfig" class="overlay" @click.self="showConfigDetail=false">
+      <div class="config-detail-panel">
+        <div class="detail-header">
+          <span class="detail-title">{{ currentConfig.name }}</span>
+          <button class="btn-close" @click="showConfigDetail=false">×</button>
+        </div>
+        <div class="detail-body">
+          <div class="detail-section">
+            <div class="detail-label">描述</div>
+            <div class="detail-text">{{ currentConfig.description || '无描述' }}</div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-label">System Prompt</div>
+            <div class="detail-prompt">{{ currentConfig.systemPrompt }}</div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-label">工具列表</div>
+            <div class="detail-tools">
+              <span v-for="t in currentConfig.tools" :key="t" class="tool-chip">{{ t }}</span>
+            </div>
+          </div>
+          <div v-if="currentConfig.modelParams" class="detail-section">
+            <div class="detail-label">模型参数</div>
+            <div class="detail-params">
+              <span>Temperature: {{ currentConfig.modelParams.temperature ?? '-' }}</span>
+              <span>MaxTokens: {{ currentConfig.modelParams.maxTokens ?? '-' }}</span>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button class="btn btn-ghost" @click="deleteConfigItem(currentConfig)">删除配置</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 <script setup>
@@ -77,10 +125,12 @@ import { ref, onMounted } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import { useAgentStore } from '@/stores/agent.js'
+import { useConfigStore } from '@/stores/config.js'
 import { useAppStore } from '@/stores/app.js'
 import ToolCallCard from '@/components/agent/ToolCallCard.vue'
 
 const agentStore = useAgentStore()
+const configStore = useConfigStore()
 const appStore   = useAppStore()
 const taskText   = ref('')
 const taskListEl = ref(null)
@@ -91,6 +141,20 @@ function formatTime(iso) { return iso ? new Date(iso).toLocaleTimeString('zh-CN'
 async function runTask() { if (!taskText.value.trim() || agentStore.running) return; const t = taskText.value.trim(); taskText.value = ''; await agentStore.runTask(t) }
 function useExample(task) { if (!agentStore.running) taskText.value = task }
 async function copyAnswer(text) { await navigator.clipboard.writeText(text); appStore.toast.success('已复制') }
+
+// 查看配置详情（弹窗展示）
+const showConfigDetail = ref(false)
+const currentConfig = ref(null)
+function viewConfig(cfg) {
+  currentConfig.value = cfg
+  showConfigDetail.value = true
+}
+async function deleteConfigItem(cfg) {
+  if (!confirm(`确定删除配置「${cfg.name}」？`)) return
+  await configStore.deleteConfig(cfg.id, 'agent')
+  agentStore.loadAgentConfigs()
+  if (currentConfig.value?.id === cfg.id) showConfigDetail.value = false
+}
 function extractReportId(text) { const m = text.match(/报告ID[：:]\s*([a-f0-9]{12})/); return m ? m[1] : null }
 function extractReportTitle(text) { const m = text.match(/# (.+)/); return m ? m[1] : '报告' }
 /** 从回答文本中提取真正的报告正文（去掉 LLM 引导语） */
@@ -124,7 +188,7 @@ async function downloadReport(task) {
   URL.revokeObjectURL(url)
   appStore.toast.success('报告已下载')
 }
-onMounted(() => agentStore.loadMeta())
+onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
 </script>
 <style scoped>
 .agent-view { display:flex; height:100%; overflow:hidden; background:var(--color-bg); }
@@ -172,4 +236,30 @@ onMounted(() => agentStore.loadMeta())
 .btn-copy:hover { background:var(--color-primary-bg); color:var(--color-primary); }
 .answer-content { font-size:14px; line-height:1.75; color:var(--color-text); }
 .error-hint { display:flex; align-items:center; gap:6px; padding:var(--space-md) var(--space-lg); color:var(--color-danger); font-size:13px; background:#fef2f2; border-top:1px solid #fecaca; }
+/* 配置管理 */
+.configs-section { padding:var(--space-md); border-top:1px solid var(--color-border-light); }
+.config-empty { font-size:11px; color:var(--color-text-muted); }
+.config-item { padding:8px 10px; border-radius:var(--radius-md); cursor:pointer; transition:background var(--transition); margin-bottom:4px; }
+.config-item:hover { background:var(--color-border-light); }
+.config-name { font-size:12px; font-weight:600; color:var(--color-text); }
+.config-desc { font-size:10px; color:var(--color-text-muted); margin-top:2px; }
+.config-tools { display:flex; flex-wrap:wrap; gap:3px; margin-top:4px; }
+.tool-chip-sm { font-size:9px; padding:1px 5px; background:var(--color-border-light); border-radius:var(--radius-full); color:var(--color-text-sub); }
+/* 配置详情弹窗 */
+.overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:100; display:flex; align-items:center; justify-content:center; }
+.config-detail-panel { background:var(--color-surface); border-radius:var(--radius-xl); width:520px; max-height:70vh; display:flex; flex-direction:column; overflow:hidden; box-shadow:var(--shadow-lg); }
+.detail-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; font-size:14px; font-weight:600; border-bottom:1px solid var(--color-border); }
+.detail-title { color:var(--color-text); }
+.btn-close { background:none; border:none; font-size:18px; color:var(--color-text-muted); cursor:pointer; }
+.detail-body { padding:var(--space-lg); overflow-y:auto; display:flex; flex-direction:column; gap:var(--space-md); }
+.detail-section { display:flex; flex-direction:column; gap:4px; }
+.detail-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-muted); }
+.detail-text { font-size:13px; color:var(--color-text); }
+.detail-prompt { font-size:12px; line-height:1.7; color:var(--color-text); background:var(--color-bg); padding:10px 12px; border-radius:var(--radius-md); font-family:var(--font-mono); white-space:pre-wrap; max-height:200px; overflow-y:auto; }
+.detail-tools { display:flex; flex-wrap:wrap; gap:5px; }
+.detail-tools .tool-chip { font-size:11px; padding:3px 9px; background:var(--color-primary-bg); color:var(--color-primary); border-radius:var(--radius-full); border:none; }
+.detail-params { display:flex; gap:var(--space-lg); font-size:12px; color:var(--color-text-sub); font-family:var(--font-mono); }
+.detail-actions { display:flex; justify-content:flex-end; margin-top:var(--space-sm); }
+.btn-ghost { background:none; border:1px solid var(--color-border); color:var(--color-text-sub); padding:5px 12px; border-radius:var(--radius-sm); font-size:12px; cursor:pointer; transition:all var(--transition); }
+.btn-ghost:hover { border-color:var(--color-danger); color:var(--color-danger); }
 </style>

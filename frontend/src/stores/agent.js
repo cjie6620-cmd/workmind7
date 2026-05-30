@@ -18,6 +18,16 @@ export const useAgentStore = defineStore('agent', () => {
     { name: 'write_report', label: '生成报告', description: '生成并保存分析报告' },
     { name: 'send_notify',  label: '发送通知', description: '发送通知给相关人员' },
   ])
+
+  // ── Agent 配置列表（从数据库加载）──────────────────────────
+  const agentConfigs = ref([])
+
+  async function loadAgentConfigs() {
+    try {
+      const data = await http.get('/agent/configs')
+      agentConfigs.value = data.configs || []
+    } catch {}
+  }
   const examples = ref([
     { title: '技术调研', task: '对比 Vue3 和 React 2024年的最新状态，分别查询它们的最新版本和主要特性，生成一份技术选型报告' },
     { title: '费用计算', task: '我出差3天，酒店每晚580元，机票往返1200元，餐费每天150元，帮我计算总报销金额，并查询一下公司差旅报销标准' },
@@ -34,17 +44,62 @@ export const useAgentStore = defineStore('agent', () => {
       if (toolsRes.tools?.length)     toolList.value = toolsRes.tools
       if (examplesRes.examples?.length) examples.value = examplesRes.examples
     } catch {}
+    // 并行加载 Agent 配置
+    loadAgentConfigs()
   }
 
   // ── 任务执行历史 ───────────────────────────────────────────
   // 每个任务是一条记录：{ id, task, steps, answer, status, startTime, duration }
   const tasks    = ref([])
   const running  = ref(false)
+  const sessionId = ref('')  // 当前会话 ID
 
   // 当前正在执行的任务状态（实时更新）
   const currentTask = ref(null)
 
   let taskId = 0
+
+  // 页面加载时恢复历史
+  async function initSession() {
+    const sid = localStorage.getItem('agent_session_id')
+    if (sid) {
+      try {
+        const data = await http.get(`/agent/history/${sid}`)
+        if (data.messages?.length) {
+          sessionId.value = sid
+          // 将历史消息转换为任务记录
+          const pairs = []
+          const msgs = data.messages
+          for (let i = 0; i < msgs.length; i++) {
+            if (msgs[i].role === 'user') {
+              const answer = msgs[i + 1]?.role === 'assistant' ? msgs[i + 1].content : ''
+              pairs.push({ task: msgs[i].content, answer })
+            }
+          }
+          tasks.value = pairs.map((p, idx) => ({
+            id: idx + 1,
+            task: p.task,
+            steps: [],
+            answer: p.answer,
+            status: 'done',
+            startTime: new Date().toISOString(),
+            duration: 0,
+            reportMeta: null,
+          }))
+          taskId = pairs.length
+          return
+        }
+      } catch {}
+    }
+    newSession()
+  }
+
+  function newSession() {
+    sessionId.value = ''
+    tasks.value = []
+    currentTask.value = null
+    localStorage.removeItem('agent_session_id')
+  }
 
   // ── 执行任务 ───────────────────────────────────────────────
   async function runTask(taskText) {
@@ -82,6 +137,11 @@ export const useAgentStore = defineStore('agent', () => {
         onEvent: (event, data) => {
           if (event === 'start') {
             rt.status = 'running'
+            // 保存后端返回的 sessionId
+            if (data.sessionId) {
+              sessionId.value = data.sessionId
+              localStorage.setItem('agent_session_id', data.sessionId)
+            }
           }
 
           if (event === 'tool_call') {
@@ -148,8 +208,8 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   return {
-    toolList, examples,
-    tasks, running, currentTask,
-    loadMeta, runTask, clearTasks,
+    toolList, examples, agentConfigs,
+    tasks, running, currentTask, sessionId,
+    loadMeta, loadAgentConfigs, runTask, clearTasks, initSession, newSession,
   }
 })

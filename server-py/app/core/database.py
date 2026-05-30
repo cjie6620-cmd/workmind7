@@ -84,7 +84,7 @@ async def init_db():
 
     仅在首次部署时调用，或使用 alembic 进行 migrations
     """
-    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document
+    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -117,7 +117,7 @@ async def check_tables() -> dict:
         return _tables_status
 
     # 导入模型确保 metadata 已注册
-    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document
+    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord
     required = set(Base.metadata.tables.keys())
     missing = required - existing
 

@@ -188,18 +188,18 @@ async def prompt_ab_test_stream(req: dict):
     return EventSourceResponse(event_generator())
 
 
-# ── 模板 CRUD ───────────────────────────────────────────────
+# ── 模板 CRUD（数据库存储）───────────────────────────────────
 
 @prompt_router.get('/templates')
 async def list_prompt_templates():
     """获取所有 Prompt 模板（按创建时间倒序）"""
-    return {'templates': list_templates()}
+    return {'templates': await list_templates()}
 
 
 @prompt_router.get('/templates/{template_id}')
 async def get_prompt_template(template_id: str):
     """获取指定模板详情"""
-    t = get_template(template_id)
+    t = await get_template(template_id)
     if not t:
         return JSONResponse(status_code=404, content={'error': {'message': '模板不存在'}})
     return t
@@ -216,14 +216,14 @@ async def create_prompt_template(req: dict):
     system_prompt = (req.get('systemPrompt') or '').strip()
     if not name or not system_prompt:
         return JSONResponse(status_code=400, content={'error': {'message': '模板名称和内容不能为空'}})
-    template = save_template(name, system_prompt, req.get('description', ''), req.get('tags', []))
+    template = await save_template(name, system_prompt, req.get('description', ''), req.get('tags', []))
     return {'success': True, 'template': template}
 
 
 @prompt_router.put('/templates/{template_id}')
 async def update_prompt_template(template_id: str, req: dict):
     """更新模板（同时保存历史版本）"""
-    template = save_template(
+    template = await save_template(
         req.get('name', ''), req.get('systemPrompt', ''),
         req.get('description', ''), req.get('tags', []),
         existing_id=template_id,
@@ -233,9 +233,9 @@ async def update_prompt_template(template_id: str, req: dict):
 
 @prompt_router.delete('/templates/{template_id}')
 async def remove_prompt_template(template_id: str):
-    """删除模板（内置模板不可删除）"""
+    """删除模板"""
     try:
-        delete_template(template_id)
+        await delete_template(template_id)
         return {'success': True}
     except ValueError as err:
         return JSONResponse(status_code=400, content={'error': {'message': str(err)}})

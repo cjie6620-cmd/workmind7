@@ -88,7 +88,7 @@ async def get_session_info(session_id: str) -> dict:
     }
 
 
-async def save_message(session_id: str, role: str, content: str, model: str = None, tokens: int = None):
+async def save_message(session_id: str, role: str, content: str, model: str = None, tokens: int = None, metadata: dict = None):
     """
     保存单条消息到 PostgreSQL
 
@@ -98,6 +98,7 @@ async def save_message(session_id: str, role: str, content: str, model: str = No
     - content: 消息内容
     - model: 使用的模型
     - tokens: token 数
+    - metadata: 附加元数据（如 sources、steps 等）
     """
     async with async_session_factory() as session:
         msg = Conversation(
@@ -106,6 +107,7 @@ async def save_message(session_id: str, role: str, content: str, model: str = No
             content=content,
             model=model,
             tokens=tokens,
+            metadata_=metadata or {},
         )
         session.add(msg)
         await session.commit()

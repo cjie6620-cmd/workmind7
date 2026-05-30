@@ -101,8 +101,38 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const messages     = ref([])   // 问答历史
   const querying     = ref(false)
   const filterCategory = ref('')
+  const sessionId    = ref('')   // 当前会话 ID
 
   let msgId = 0
+
+  // 页面加载时恢复历史
+  async function initSession() {
+    const sid = localStorage.getItem('kn_session_id')
+    if (sid) {
+      try {
+        const data = await http.get(`/knowledge/history/${sid}`)
+        if (data.messages?.length) {
+          sessionId.value = sid
+          messages.value = data.messages.map(m => ({
+            id: ++msgId,
+            role: m.role,
+            content: m.content,
+            time: m.createdAt,
+            ...(m.role === 'assistant' && m.metadata?.sources ? { sources: m.metadata.sources } : {}),
+          }))
+          return
+        }
+      } catch {}
+    }
+    // 没有历史或加载失败，用新的 sessionId
+    newSession()
+  }
+
+  function newSession() {
+    sessionId.value = ''
+    messages.value = []
+    localStorage.removeItem('kn_session_id')
+  }
 
   async function query(question) {
     if (!question.trim() || querying.value) return
@@ -127,7 +157,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
     await fetchStream(
       '/api/knowledge/query/stream',
-      { question, category: filterCategory.value || undefined },
+      { question, category: filterCategory.value || undefined, sessionId: sessionId.value || undefined },
       {
         onToken: (token) => {
           aiMsg.content += token
@@ -139,6 +169,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           }
           if (event === 'status') {
             aiMsg.status = data.message
+          }
+          // 保存后端返回的 sessionId
+          if (event === 'done' && data.sessionId) {
+            sessionId.value = data.sessionId
+            localStorage.setItem('kn_session_id', data.sessionId)
           }
         },
         onDone: () => {
@@ -163,9 +198,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   return {
     documents, categories, uploading, uploadProgress,
-    messages, querying, filterCategory,
+    messages, querying, filterCategory, sessionId,
     loadDocuments, loadCategories,
     uploadFile, uploadText, deleteDocument,
-    query, clearMessages,
+    query, clearMessages, initSession, newSession,
   }
 })

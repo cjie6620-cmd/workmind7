@@ -31,6 +31,7 @@ def get_chat_model():
             base_url=config['ai']['base_url'],
             temperature=0.7,
             streaming=True,
+            stream_usage=True,
             callbacks=[],
             timeout=30,
         )
@@ -46,6 +47,7 @@ def create_chat_model(temperature=0.7, streaming=False, callbacks=None):
         base_url=config['ai']['base_url'],
         temperature=temperature,
         streaming=streaming,
+        stream_usage=True,
         callbacks=callbacks or [],
         timeout=30,
     )

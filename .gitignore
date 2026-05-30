@@ -13,8 +13,10 @@ server-py/.venv/
 .env
 .env.local
 .env.*
+!.env.example
 server-py/.env
 server-py/.env.*
+!.env.example
 
 # Node (frontend)
 node_modules/

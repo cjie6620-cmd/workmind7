@@ -20,7 +20,8 @@ from .routes.agent import agent_router
 from .routes.workflow import workflow_router
 from .routes.erp import erp_router
 from .routes.prompt import prompt_router
-from .routes.monitor import monitor_router
+from .routes.monitor import monitor_router, start_flush_task, stop_flush_task
+from .routes.config import config_router
 
 
 @asynccontextmanager
@@ -41,7 +42,6 @@ async def lifespan(app: FastAPI):
         print('[WARN] 对话历史、用户画像等功能将不可用', file=sys.stderr)
 
     # 预加载 embeddings 模型（失败不阻塞启动，后续请求时按需加载）
-    import sys
     print('Pre-loading embeddings model...', file=sys.stderr)
     try:
         from .services.model import get_embeddings
@@ -72,10 +72,31 @@ async def lifespan(app: FastAPI):
         print(f'[WARN] 文档注册表加载失败: {e}', file=sys.stderr)
         print('[WARN] 知识库相关功能将不可用', file=sys.stderr)
 
+    # 启动用量监控持久化后台任务
+    print('Starting monitor flush task...', file=sys.stderr)
+    try:
+        await start_flush_task()
+        print('Monitor flush task started.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 监控持久化任务启动失败: {e}', file=sys.stderr)
+
+    # 自动填充配置种子数据（仅首次，表为空时才插入）
+    print('Seeding default configs...', file=sys.stderr)
+    try:
+        from .services.config.config_service import seed_if_empty
+        from .services.config.seed_data import PROMPT_SEEDS, AGENT_SEEDS, WORKFLOW_SEEDS
+        await seed_if_empty('prompt', PROMPT_SEEDS)
+        await seed_if_empty('agent', AGENT_SEEDS)
+        await seed_if_empty('workflow', WORKFLOW_SEEDS)
+        print('Default configs ready.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 配置种子数据初始化失败: {e}', file=sys.stderr)
+
     print(f'\nWorkMind Server started', file=sys.stderr)
     print(f'   URL: http://localhost:{config["app"]["port"]}', file=sys.stderr)
     print(f'   Health: http://localhost:{config["app"]["port"]}/health\n', file=sys.stderr)
     yield
+    await stop_flush_task()
     logger.info('server shutdown')
 
 
@@ -98,6 +119,7 @@ app.include_router(workflow_router, prefix='/api/workflow', tags=['workflow'])
 app.include_router(erp_router, prefix='/api/erp', tags=['erp'])
 app.include_router(prompt_router, prefix='/api/prompt', tags=['prompt'])
 app.include_router(monitor_router, prefix='/api/monitor', tags=['monitor'])
+app.include_router(config_router, prefix='/api/configs', tags=['configs'])
 
 
 # 404 处理：未匹配的路由返回友好提示

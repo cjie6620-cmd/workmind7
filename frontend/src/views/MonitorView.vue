@@ -9,14 +9,33 @@
     </div>
 
     <div class="budget-bar-wrap">
+      <!-- 模型信息 -->
+      <div class="model-info">
+        <span class="model-name">{{ s.overview?.model ?? '—' }}</span>
+        <span class="model-pricing">输入 ${{ s.overview?.pricing?.input ?? 0.14 }}/M · 输出 ${{ s.overview?.pricing?.output ?? 0.28 }}/M</span>
+      </div>
+
+      <!-- Token 预算 -->
       <div class="budget-label">
-        <span>今日预算使用</span>
-        <span class="budget-pct" :class="{ warn: (s.overview?.budgetUsedPct??0) >= 80 }">{{ s.overview?.budgetUsedPct ?? 0 }}%</span>
+        <span>Token 使用</span>
+        <span class="budget-detail">{{ fmtNum(tokenUsed) }} / {{ fmtNum(s.overview?.tokenBudget ?? 0) }}</span>
+        <span class="budget-pct" :class="{ warn: (s.overview?.tokenUsedPct??0) >= 80 }">{{ (s.overview?.tokenUsedPct ?? 0).toFixed(2) }}%</span>
+      </div>
+      <div class="budget-bar">
+        <div class="budget-fill" :style="{ width: Math.min(s.overview?.tokenUsedPct??0, 100) + '%' }" :class="{ warn: (s.overview?.tokenUsedPct??0) >= 80, danger: (s.overview?.tokenUsedPct??0) >= 100 }" />
+      </div>
+
+      <!-- 金额预算 -->
+      <div class="budget-label" style="margin-top:12px">
+        <span>费用使用</span>
+        <span class="budget-detail">¥{{ s.overview?.costCNYToday ?? 0 }} / ¥{{ s.overview?.dailyBudget ?? 50 }}</span>
+        <span class="budget-pct" :class="{ warn: (s.overview?.budgetUsedPct??0) >= 80 }">{{ (s.overview?.budgetUsedPct ?? 0).toFixed(2) }}%</span>
         <button class="btn-text-xs" @click="showBE = !showBE">修改预算</button>
       </div>
       <div class="budget-bar">
         <div class="budget-fill" :style="{ width: Math.min(s.overview?.budgetUsedPct??0, 100) + '%' }" :class="{ warn: (s.overview?.budgetUsedPct??0) >= 80, danger: (s.overview?.budgetUsedPct??0) >= 100 }" />
       </div>
+
       <div v-if="showBE" class="budget-edit">
         <input type="number" v-model.number="newBudget" class="input budget-input" min="1" />
         <button class="btn btn-primary btn-xs" @click="updateBudget">保存</button>
@@ -27,33 +46,13 @@
     <div class="charts-row">
       <div class="chart-card">
         <div class="chart-title">近 7 日 Token 消耗</div>
-        <div class="bar-chart">
-          <div v-for="day in (s.last7Days||[])" :key="day.date" class="bar-col">
-            <div class="bar-group">
-              <div class="bar input-bar" :style="{ height: barH(day.inputT) + 'px' }" :title="`输入 ${day.inputT}`" />
-              <div class="bar output-bar" :style="{ height: barH(day.outputT) + 'px' }" :title="`输出 ${day.outputT}`" />
-            </div>
-            <div class="bar-label">{{ day.label }}</div>
-            <div class="bar-cost">¥{{ day.costCNY }}</div>
-          </div>
-        </div>
-        <div class="chart-legend">
-          <span class="legend-item input">输入</span>
-          <span class="legend-item output">输出</span>
-        </div>
+        <ECharts :option="tokenChartOption" :height="200" />
       </div>
 
       <div class="chart-card">
         <div class="chart-title">今日调用分布</div>
         <div v-if="!(s.byFeature?.length)" class="chart-empty">暂无今日数据</div>
-        <div v-else class="feature-list">
-          <div v-for="f in s.byFeature" :key="f.feature" class="feature-row">
-            <span class="feature-label">{{ f.label }}</span>
-            <div class="feature-bar-wrap"><div class="feature-bar" :style="{ width: featureBarW(f.calls) + '%' }" /></div>
-            <span class="feature-calls">{{ f.calls }}</span>
-            <span class="feature-cost">¥{{ f.costCNY }}</span>
-          </div>
-        </div>
+        <ECharts v-else :option="featurePieOption" :height="200" />
       </div>
 
       <div class="chart-card">
@@ -100,6 +99,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import http from '@/utils/http.js'
+import ECharts from '@/components/common/ECharts.vue'
 import { useAppStore } from '@/stores/app.js'
 const appStore = useAppStore()
 const s = ref({})
@@ -116,11 +116,52 @@ async function updateBudget() {
   await http.put('/monitor/budget', { dailyBudget: newBudget.value })
   await loadStats(); showBE.value = false; appStore.toast.success('预算已更新')
 }
-const maxT = computed(() => Math.max(...(s.value.last7Days||[]).map(d=>d.inputT+d.outputT), 1))
-const maxC = computed(() => Math.max(...(s.value.byFeature||[]).map(f=>f.calls), 1))
-function barH(val) { return Math.max(2, Math.round((val/maxT.value)*80)) }
-function featureBarW(calls) { return Math.round((calls/maxC.value)*100) }
+// ── ECharts 图表配置 ──────────────────────────────────────────────
+const CHART_COLORS = ['#6366f1', '#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6']
+
+const tokenChartOption = computed(() => {
+  const days = s.value.last7Days || []
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        let tip = params[0].axisValueLabel
+        params.forEach(p => { tip += `<br/>${p.marker} ${p.seriesName}: ${p.value.toLocaleString()}` })
+        return tip
+      },
+    },
+    legend: { data: ['输入 Tokens', '输出 Tokens'], top: 0, textStyle: { fontSize: 11, color: '#64748b' } },
+    grid: { left: 50, right: 16, top: 30, bottom: 16 },
+    xAxis: { type: 'category', data: days.map(d => d.label), axisLabel: { fontSize: 10, color: '#94a3b8' } },
+    yAxis: { type: 'value', axisLabel: { fontSize: 10, color: '#94a3b8' }, splitLine: { lineStyle: { color: '#f1f5f9' } } },
+    series: [
+      { name: '输入 Tokens', type: 'bar', data: days.map(d => d.inputT), itemStyle: { color: CHART_COLORS[0] }, barMaxWidth: 24 },
+      { name: '输出 Tokens', type: 'bar', data: days.map(d => d.outputT), itemStyle: { color: CHART_COLORS[1] }, barMaxWidth: 24 },
+    ],
+  }
+})
+
+const featurePieOption = computed(() => {
+  const features = s.value.byFeature || []
+  if (!features.length) return {}
+  return {
+    tooltip: {
+      trigger: 'item',
+      formatter(p) { return `${p.name}: ${p.value} 次<br/>¥${features.find(f => f.label === p.name)?.costCNY ?? 0}` },
+    },
+    series: [{
+      type: 'pie',
+      radius: ['40%', '70%'],
+      center: ['50%', '45%'],
+      data: features.map((f, i) => ({ name: f.label, value: f.calls, itemStyle: { color: CHART_COLORS[i % CHART_COLORS.length] } })),
+      label: { fontSize: 11, formatter: '{b}\n{d}%', color: '#475569' },
+      labelLine: { length: 8, length2: 12 },
+    }],
+  }
+})
 const latencyItems = computed(() => ({ P50: s.value.latency?.p50??0, P90: s.value.latency?.p90??0, P99: s.value.latency?.p99??0, AVG: s.value.latency?.avg??0 }))
+const tokenUsed = computed(() => (s.value.overview?.tokenInputToday ?? 0) + (s.value.overview?.tokenOutputToday ?? 0))
+function fmtNum(n) { return n == null ? '0' : n.toLocaleString() }
 const filteredCalls = computed(() => { const c = s.value.recentCalls||[]; return featureFilter.value ? c.filter(x=>x.feature===featureFilter.value) : c })
 const featureOptions = computed(() => [...new Set((s.value.recentCalls||[]).map(c=>c.feature))].map(f=>({ feature:f, label:featureLabel(f) })))
 function fmtTime(iso) { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}` }
@@ -146,7 +187,11 @@ export default { components: { MetricCard } }
 .metric-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-muted); margin-top:4px; }
 .metric-sub { font-size:11px; color:var(--color-text-muted); margin-top:2px; }
 .budget-bar-wrap { background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:var(--space-md) var(--space-lg); }
+.model-info { display:flex; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--color-border-light); }
+.model-name { font-size:12px; font-weight:700; color:var(--color-primary); background:var(--color-primary-bg); padding:2px 8px; border-radius:var(--radius-full); }
+.model-pricing { font-size:10px; color:var(--color-text-muted); }
 .budget-label { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--color-text-sub); margin-bottom:8px; }
+.budget-detail { font-size:11px; color:var(--color-text-muted); margin-left:auto; }
 .budget-pct { font-weight:700; color:var(--color-text); }
 .budget-pct.warn { color:var(--color-warning); }
 .btn-text-xs { font-size:11px; color:var(--color-primary); background:none; border:none; cursor:pointer; margin-left:auto; }
@@ -161,26 +206,6 @@ export default { components: { MetricCard } }
 .chart-card { background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:var(--space-lg); }
 .chart-title { font-size:12px; font-weight:600; color:var(--color-text); margin-bottom:var(--space-md); }
 .chart-empty { font-size:12px; color:var(--color-text-muted); text-align:center; padding:24px 0; }
-.bar-chart { display:flex; align-items:flex-end; gap:var(--space-sm); height:100px; padding-bottom:4px; }
-.bar-col { display:flex; flex-direction:column; align-items:center; flex:1; gap:3px; }
-.bar-group { display:flex; align-items:flex-end; gap:2px; }
-.bar { width:10px; border-radius:2px 2px 0 0; transition:height .3s; min-height:2px; }
-.input-bar { background:var(--color-primary); }
-.output-bar { background:var(--color-info); }
-.bar-label { font-size:9px; color:var(--color-text-muted); }
-.bar-cost { font-size:9px; color:var(--color-text-muted); }
-.chart-legend { display:flex; gap:var(--space-md); margin-top:var(--space-sm); }
-.legend-item { display:flex; align-items:center; gap:4px; font-size:10px; color:var(--color-text-muted); }
-.legend-item::before { content:''; width:10px; height:3px; border-radius:2px; display:inline-block; }
-.legend-item.input::before { background:var(--color-primary); }
-.legend-item.output::before { background:var(--color-info); }
-.feature-list { display:flex; flex-direction:column; gap:8px; }
-.feature-row { display:flex; align-items:center; gap:8px; }
-.feature-label { font-size:11px; color:var(--color-text-sub); width:70px; flex-shrink:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.feature-bar-wrap { flex:1; height:6px; background:var(--color-border); border-radius:var(--radius-full); overflow:hidden; }
-.feature-bar { height:100%; background:var(--color-primary); border-radius:var(--radius-full); transition:width .4s; }
-.feature-calls { font-size:11px; color:var(--color-text-muted); width:28px; text-align:right; }
-.feature-cost { font-size:11px; color:var(--color-warning); width:40px; text-align:right; }
 .latency-stats { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-sm); }
 .lat-item { text-align:center; padding:10px 6px; background:var(--color-bg); border-radius:var(--radius-md); border:1px solid var(--color-border-light); }
 .lat-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-muted); }
