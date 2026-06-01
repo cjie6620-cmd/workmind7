@@ -1,0 +1,46 @@
+{
+  "公司规章制度.txt": {
+    "expected_chunk_count_min": 5,
+    "expected_chunk_count_max": 8,
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "separators": ["\\n\\n", "\\n", "。", "；", "，", " ", ""],
+    "sample_chunks": [
+      {"index": 0, "starts_with": "第一章 总则", "contains": ["总则", "规章制度"]},
+      {"index": 1, "starts_with": "第三条", "contains": ["工作时间", "9:00", "18:00"]}
+    ]
+  },
+  "差旅报销规定.txt": {
+    "expected_chunk_count_min": 5,
+    "expected_chunk_count_max": 7,
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "separators": ["\\n\\n", "\\n", "。", "；", "，", " ", ""],
+    "sample_chunks": [
+      {"index": 0, "starts_with": "第一章 总则", "contains": ["差旅", "费用"]},
+      {"index": 1, "starts_with": "第三条", "contains": ["飞机", "商务舱", "经济舱"]}
+    ]
+  },
+  "产品介绍.md": {
+    "expected_chunk_count_min": 7,
+    "expected_chunk_count_max": 12,
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "separators": ["\\n\\n", "\\n", "。", "；", "，", " ", ""],
+    "sample_chunks": [
+      {"index": 0, "starts_with": "# WorkMind AI", "contains": ["WorkMind", "智能办公"]},
+      {"index": 1, "starts_with": "## 二", "contains": ["核心功能", "智能对话"]}
+    ]
+  },
+  "技术架构说明.md": {
+    "expected_chunk_count_min": 8,
+    "expected_chunk_count_max": 14,
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "separators": ["\\n\\n", "\\n", "。", "；", "，", " ", ""],
+    "sample_chunks": [
+      {"index": 0, "starts_with": "# 技术架构", "contains": ["系统架构"]},
+      {"index": 1, "starts_with": "## 二", "contains": ["后端", "FastAPI"]}
+    ]
+  }
+}
