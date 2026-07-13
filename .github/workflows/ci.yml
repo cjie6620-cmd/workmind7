@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: workmind_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: cd server-py && uv pip install -r requirements.txt ruff mypy pytest pytest-asyncio httpx bcrypt
+      - run: cd server-py && ruff check .
+      - run: cd server-py && ruff format --check .
+      - run: cd server-py && mypy app/ --ignore-missing-imports
+      - env:
+          DEEPSEEK_API_KEY: sk-test-mock
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/workmind_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          AUTH_ENABLED: 'false'
+        run: |
+          cd server-py
+          uv run alembic upgrade head
+          uv run pytest -m "not live and not slow" -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci && npm run build
+      - run: cd frontend && npm run test
+      - run: cd frontend && npm run lint

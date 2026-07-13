@@ -19,16 +19,20 @@ import re
 import time
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+from ..auth.dependencies import get_current_user
+from ..auth.models import UserContext
 from ..services.rag.ingest import ingest_document, get_doc_registry, delete_document
 from ..services.rag.query import rag_query_stream
 from ..services.chat.memory import save_message, get_history_db, list_sessions, get_session_info
+from ..schemas.requests import KnowledgeQueryRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.file_validate import validate_file, validate_ext, MAX_FILE_SIZE
 from ..utils.logger import logger
+from ..utils.session_guard import assert_session_owner
 
 knowledge_router = APIRouter()
 
@@ -229,7 +233,11 @@ async def remove_document(doc_id: str):
 
 
 @knowledge_router.post('/query/stream')
-async def rag_stream(req: dict):
+async def rag_stream(
+    req: KnowledgeQueryRequest,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+):
     """
     RAG 流式问答接口
 
@@ -239,18 +247,20 @@ async def rag_stream(req: dict):
     第四步：推送完成事件
     第五步：持久化问答记录到 conversations 表
     """
-    question = (req.get('question') or '').strip()
-    category = req.get('category')
-    session_id = req.get('sessionId') or f'knowledge_{uuid.uuid4().hex[:12]}'
+    question = req.question.strip()
+    category = req.category
+    user_id = user.user_id
+    session_id = req.sessionId or f'knowledge_{user_id}_{uuid.uuid4().hex[:12]}'
 
     if not question:
         return JSONResponse(status_code=400, content={'error': {'message': '问题不能为空'}})
 
+    await assert_session_owner(session_id, user_id)
+
     async def event_generator():
         full_answer = ''
         try:
-            # 持久化用户问题
-            await save_message(session_id, 'user', question)
+            await save_message(session_id, 'user', question, user_id=user_id)
 
             yield sse_event('status', {'message': '正在检索相关文档...'})
 
@@ -263,27 +273,29 @@ async def rag_stream(req: dict):
                 full_answer = '知识库中未找到相关内容，请尝试上传相关文档后再提问。'
                 yield sse_event('token', {'token': full_answer})
                 yield sse_event('done', {})
-                # 持久化 AI 回答
-                await save_message(session_id, 'assistant', full_answer)
+                await save_message(session_id, 'assistant', full_answer, user_id=user_id)
                 return
 
             yield sse_event('status', {'message': '正在生成回答...'})
 
             async for token in result['stream_answer']():
+                if await request.is_disconnected():
+                    break
                 full_answer += token
                 yield sse_event('token', {'token': token})
 
-            # 持久化 AI 回答（含来源信息）
-            await save_message(session_id, 'assistant', full_answer,
-                               metadata={'sources': [{'title': s.get('title')} for s in sources]})
-
-            yield sse_event('done', {'sessionId': session_id})
-            logger.info('knowledge: query done', {'question': question[:40], 'sources': len(sources)})
+            if not await request.is_disconnected():
+                await save_message(
+                    session_id, 'assistant', full_answer,
+                    metadata={'sources': [{'title': s.get('title')} for s in sources]},
+                    user_id=user_id,
+                )
+                yield sse_event('done', {'sessionId': session_id})
+                logger.info('knowledge: query done', {'question': question[:40], 'sources': len(sources)})
         except Exception as err:
             logger.error('knowledge: query error', {'error': str(err)})
-            # 即使出错也保存不完整的回答
             if full_answer:
-                await save_message(session_id, 'assistant', full_answer)
+                await save_message(session_id, 'assistant', full_answer, user_id=user_id)
             yield sse_error(err)
 
     return EventSourceResponse(event_generator())
@@ -302,15 +314,16 @@ async def get_categories():
 
 
 @knowledge_router.get('/history/{session_id}')
-async def get_knowledge_history(session_id: str):
+async def get_knowledge_history(session_id: str, user: UserContext = Depends(get_current_user)):
     """获取知识库问答历史"""
+    await assert_session_owner(session_id, user.user_id)
     info = await get_session_info(session_id)
     return info
 
 
 @knowledge_router.get('/sessions')
-async def get_knowledge_sessions():
-    """获取知识库所有会话列表"""
+async def get_knowledge_sessions(user: UserContext = Depends(get_current_user)):
+    """获取当前用户的知识库会话列表"""
     from sqlalchemy import select, func
     from ..core.database import async_session_factory
     from ..models.entities import Conversation
@@ -323,6 +336,7 @@ async def get_knowledge_sessions():
                 func.min(Conversation.created_at).label('created_at'),
             )
             .where(Conversation.session_id.like('knowledge_%'))
+            .where(Conversation.user_id == user.user_id)
             .group_by(Conversation.session_id)
             .order_by(func.min(Conversation.created_at).desc())
         )

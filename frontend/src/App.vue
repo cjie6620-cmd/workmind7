@@ -1,7 +1,10 @@
 <!-- frontend/src/App.vue -->
 <!-- 根布局：左侧边栏导航 + 右侧主内容区 -->
 <template>
-  <div class="app-layout" :data-theme="theme">
+  <div v-if="isLoginPage" class="login-layout">
+    <RouterView />
+  </div>
+  <div v-else class="app-layout" :data-theme="theme">
     <!-- 左侧导航侧边栏 -->
     <AppSidebar />
 
@@ -23,17 +26,23 @@
 
 <script setup>
 import { computed } from 'vue'
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import ToastList from '@/components/common/ToastList.vue'
 import { useAppStore } from '@/stores/app.js'
 
 const appStore = useAppStore()
+const route = useRoute()
 const theme = computed(() => appStore.theme)
+const isLoginPage = computed(() => route.path === '/login')
 </script>
 
 <style scoped>
+.login-layout {
+  min-height: 100vh;
+}
+
 .app-layout {
   display: flex;
   width: 100%;

@@ -5,7 +5,7 @@ WorkMind AI Server - Python Edition  →  Mr.Chen AI Server
 采用 lifespan 上下文管理器处理启动和关闭逻辑。
 """
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
@@ -22,6 +22,8 @@ from .routes.erp import erp_router
 from .routes.prompt import prompt_router
 from .routes.monitor import monitor_router, start_flush_task, stop_flush_task
 from .routes.config import config_router
+from .routes.auth import auth_router
+from .auth.dependencies import get_current_user, require_admin
 
 
 @asynccontextmanager
@@ -41,11 +43,12 @@ async def lifespan(app: FastAPI):
         print(f'[WARN] 数据库连接失败: {e}', file=sys.stderr)
         print('[WARN] 对话历史、用户画像等功能将不可用', file=sys.stderr)
 
-    # 预加载 embeddings 模型（失败不阻塞启动，后续请求时按需加载）
+    # 预加载 embeddings 模型（线程池，避免阻塞事件循环）
     print('Pre-loading embeddings model...', file=sys.stderr)
     try:
+        import asyncio
         from .services.model import get_embeddings
-        get_embeddings()
+        await asyncio.to_thread(get_embeddings)
         print('Embeddings model loaded.', file=sys.stderr)
     except OSError as e:
         print(f'[WARN] Embeddings 模型预加载失败（内存不足）：{e}', file=sys.stderr)
@@ -53,12 +56,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f'[WARN] Embeddings 模型预加载失败：{e}', file=sys.stderr)
 
-    # 初始化 pgvector 扩展和表结构（含已有数据库的列类型迁移）
-    print('Initializing pgvector schema...', file=sys.stderr)
+    # 确保 pgvector 扩展（表结构由 alembic 管理）
+    print('Ensuring pgvector extension...', file=sys.stderr)
     try:
         from .services.rag.pgvector_store import init_pgvector_schema
         await init_pgvector_schema()
-        print('pgvector schema ready.', file=sys.stderr)
+        print('pgvector extension ready.', file=sys.stderr)
     except Exception as e:
         print(f'[WARN] pgvector 初始化失败: {e}', file=sys.stderr)
 
@@ -92,19 +95,44 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f'[WARN] 配置种子数据初始化失败: {e}', file=sys.stderr)
 
+    # 加载预算配置
+    try:
+        from .routes.monitor import load_budget_from_db
+        await load_budget_from_db()
+        print('Budget config loaded.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 预算配置加载失败: {e}', file=sys.stderr)
+
+    # 种子用户（仅 users 表为空时）
+    try:
+        from .services.user_seed import ensure_seed_users
+        await ensure_seed_users()
+        print('Default users ready.', file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] 用户种子数据初始化失败: {e}', file=sys.stderr)
+
     print(f'\nMr.Chen Server started', file=sys.stderr)
     print(f'   URL: http://localhost:{config["app"]["port"]}', file=sys.stderr)
     print(f'   Health: http://localhost:{config["app"]["port"]}/health\n', file=sys.stderr)
     yield
     await stop_flush_task()
+    from .core.database import close_db
+    from .core.redis_client import close_redis
+    await close_db()
+    close_redis()
     logger.info('server shutdown')
 
+
+_is_production = config['app']['env'] == 'production'
 
 app = FastAPI(
     title='Mr.Chen Server',
     description='Mr.Chen AI 智能办公助手 - Python 版',
     version='1.0.0',
     lifespan=lifespan,
+    docs_url=None if _is_production else '/docs',
+    redoc_url=None if _is_production else '/redoc',
+    openapi_url=None if _is_production else '/openapi.json',
 )
 
 # 配置中间件（CORS、限流、请求日志、Prompt 注入检测）
@@ -112,14 +140,15 @@ setup_middleware(app)
 
 # ── 路由注册 ───────────────────────────────────────────────────
 app.include_router(health_router, prefix='/health', tags=['health'])
-app.include_router(chat_router, prefix='/api/chat', tags=['chat'])
-app.include_router(knowledge_router, prefix='/api/knowledge', tags=['knowledge'])
-app.include_router(agent_router, prefix='/api/agent', tags=['agent'])
-app.include_router(workflow_router, prefix='/api/workflow', tags=['workflow'])
-app.include_router(erp_router, prefix='/api/erp', tags=['erp'])
-app.include_router(prompt_router, prefix='/api/prompt', tags=['prompt'])
-app.include_router(monitor_router, prefix='/api/monitor', tags=['monitor'])
-app.include_router(config_router, prefix='/api/configs', tags=['configs'])
+app.include_router(auth_router, prefix='/api/auth', tags=['auth'])
+app.include_router(chat_router, prefix='/api/chat', tags=['chat'], dependencies=[Depends(get_current_user)])
+app.include_router(knowledge_router, prefix='/api/knowledge', tags=['knowledge'], dependencies=[Depends(get_current_user)])
+app.include_router(agent_router, prefix='/api/agent', tags=['agent'], dependencies=[Depends(get_current_user)])
+app.include_router(workflow_router, prefix='/api/workflow', tags=['workflow'], dependencies=[Depends(get_current_user)])
+app.include_router(erp_router, prefix='/api/erp', tags=['erp'], dependencies=[Depends(get_current_user)])
+app.include_router(prompt_router, prefix='/api/prompt', tags=['prompt'], dependencies=[Depends(require_admin)])
+app.include_router(monitor_router, prefix='/api/monitor', tags=['monitor'], dependencies=[Depends(require_admin)])
+app.include_router(config_router, prefix='/api/configs', tags=['configs'], dependencies=[Depends(require_admin)])
 
 
 # 404 处理：未匹配的路由返回友好提示

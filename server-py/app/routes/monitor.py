@@ -20,6 +20,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ..services.cache import cache
+from ..schemas.requests import BudgetUpdateRequest
 from ..utils.logger import logger
 
 monitor_router = APIRouter()
@@ -34,8 +35,19 @@ _flush_lock = asyncio.Lock()
 _flush_task: asyncio.Task | None = None
 
 
-# ── 日预算 ────────────────────────────────────────────────────
+# ── 日预算（持久化到 system_settings）──────────────────────────
 _daily_budget = 50
+
+
+async def load_budget_from_db():
+    """启动时从 DB 加载预算"""
+    global _daily_budget
+    from ..services.budget_guard import load_budget
+    _daily_budget = await load_budget()
+
+
+def get_daily_budget() -> float:
+    return _daily_budget
 
 
 def record_api_call(feature='chat', input_tokens=0, output_tokens=0,
@@ -295,11 +307,11 @@ async def get_stats():
 
 
 @monitor_router.put('/budget')
-async def set_budget(req: dict):
-    """设置日预算上限（单位：元）"""
+async def set_budget(req: BudgetUpdateRequest):
+    """设置日预算上限（单位：元），持久化到数据库"""
     global _daily_budget
-    budget = req.get('dailyBudget')
-    if not isinstance(budget, (int, float)) or budget <= 0:
-        return JSONResponse(status_code=400, content={'error': {'message': '预算必须是正数'}})
+    budget = req.dailyBudget
     _daily_budget = budget
+    from ..services.budget_guard import save_budget
+    await save_budget(budget)
     return {'success': True, 'dailyBudget': budget}

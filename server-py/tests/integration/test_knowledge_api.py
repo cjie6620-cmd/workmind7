@@ -146,7 +146,7 @@ async def test_should_return_400_for_empty_question(app_client):
 
     # 空问题应被拒绝（可能返回 400 JSON 或降级为 SSE）
     # 取决于路由实现是否在 SSE 之前校验
-    assert response.status_code in (200, 400)
+    assert response.status_code in (200, 400, 422)
 
 
 # ── 分类列表测试 ──────────────────────────────────────────────

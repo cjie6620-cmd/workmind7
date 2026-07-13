@@ -18,10 +18,11 @@
         <el-icon><Warning /></el-icon> 今日用量已达 {{ budgetAlert }}，请注意控制
       </div>
 
-      <!-- 用户头像（演示用） -->
+      <!-- 用户头像 + 登出 -->
       <div class="user-info">
-        <div class="user-avatar">C</div>
-        <span class="user-name">Mr.Chen</span>
+        <div class="user-avatar">{{ avatarLetter }}</div>
+        <span class="user-name">{{ displayName }}</span>
+        <el-button size="small" text type="primary" @click="handleLogout">登出</el-button>
       </div>
     </div>
   </header>
@@ -29,11 +30,22 @@
 
 <script setup>
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useMonitorStore } from '@/stores/monitor.js'
+import { useAuthStore } from '@/stores/auth.js'
 
 const route = useRoute()
+const router = useRouter()
 const monitorStore = useMonitorStore()
+const authStore = useAuthStore()
+
+const displayName = computed(() => authStore.user?.username || 'Mr.Chen')
+const avatarLetter = computed(() => (displayName.value[0] || 'U').toUpperCase())
+
+function handleLogout() {
+  authStore.logout()
+  router.push('/login')
+}
 
 // 各页面的标题和描述（icon 使用 Element Plus 图标名）
 const pageMeta = {

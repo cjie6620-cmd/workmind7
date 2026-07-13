@@ -171,9 +171,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { marked } from 'marked'
 import { usePromptStore } from '@/stores/prompt.js'
 import { useAppStore } from '@/stores/app.js'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const ps       = usePromptStore()
 const appStore = useAppStore()
@@ -192,7 +192,7 @@ const tabs = [
 const scoreKeys    = ['relevance', 'accuracy', 'clarity', 'conciseness', 'overall']
 const scoreLabelMap = { relevance:'相关性', accuracy:'准确性', clarity:'清晰度', conciseness:'简洁度', overall:'综合' }
 
-function renderMd(t) { try { return marked(t||'') } catch { return t||'' } }
+function renderMd(t) { return renderMarkdown(t) }
 function tempDesc(t) {
   if (t <= 0.3) return '确定性强，适合代码/分析'
   if (t <= 0.7) return '平衡创意和准确性'

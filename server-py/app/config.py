@@ -18,7 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # HuggingFace 缓存目录和国内镜像（需在模型加载前设置）
-os.environ.setdefault('HF_HOME', _hf_home := os.environ.get('HF_HOME', 'D:/huggingface_cache'))
+_hf_home = os.environ.get('HF_HOME', '')
+if _hf_home:
+    os.environ.setdefault('HF_HOME', _hf_home)
 os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
 
@@ -39,14 +41,14 @@ def _split_env(key, default_list):
 config = {
     'app': {
         'port': int(_env('PORT', '3001')),
-        'env': _env('NODE_ENV', 'development'),
+        'env': _env('APP_ENV') or _env('NODE_ENV', 'development'),
         'allowed_origins': _split_env('ALLOWED_ORIGINS', ['http://localhost:5173']),
     },
     'ai': {
         'deepseek_key': _env('DEEPSEEK_API_KEY'),
         'primary_model': _env('PRIMARY_MODEL', 'deepseek-chat'),
         'base_url': 'https://api.deepseek.com/v1',
-        'embedding_model': _env('EMBEDDING_MODEL', 'D:/huggingface_cache/modelscope/Xorbits/bge-m3'),
+        'embedding_model': _env('EMBEDDING_MODEL'),
         'embedding_device': _env('EMBEDDING_DEVICE', 'cpu'),
     },
     'rag': {
@@ -76,14 +78,25 @@ config = {
     },
     'redis': {
         'host': _env('REDIS_HOST', 'localhost'),
-        'port': int(_env('REDIS_PORT', '6380')),
-        'password': _env('REDIS_PASSWORD', 'NFTurbo666'),
+        'port': int(_env('REDIS_PORT', '6381')),
+        'password': _env('REDIS_PASSWORD'),
         'db': int(_env('REDIS_DB', '0')),
     },
     'database': {
-        'url': _env('DATABASE_URL', 'postgresql+asyncpg://ai_love:zx4221335@localhost:5433/ai_love_vector'),
+        'url': _env('DATABASE_URL'),
         'pool_size': int(_env('DB_POOL_SIZE', '10')),
         'max_overflow': int(_env('DB_MAX_OVERFLOW', '20')),
+    },
+    'auth': {
+        'enabled': _env('AUTH_ENABLED', 'true').lower() in ('1', 'true', 'yes'),
+        'jwt_secret': _env('JWT_SECRET'),
+        'jwt_expire_hours': int(_env('JWT_EXPIRE_HOURS', '24')),
+        'jwt_refresh_expire_days': int(_env('JWT_REFRESH_EXPIRE_DAYS', '7')),
+        'jwt_algorithm': _env('JWT_ALGORITHM', 'HS256'),
+    },
+    'budget': {
+        'enforce': _env('BUDGET_ENFORCE', 'false').lower() in ('1', 'true', 'yes'),
+        'daily_budget': float(_env('DAILY_BUDGET', '50')),
     },
 }
 
@@ -91,7 +104,32 @@ config = {
 def validate_config():
     """校验关键配置项，启动时调用"""
     import sys
+
     if not config['ai']['deepseek_key']:
         print('[ERROR] 缺少 DEEPSEEK_API_KEY, 请在 .env 文件中配置', file=sys.stderr)
         raise SystemExit(1)
+
+    if not config['database']['url']:
+        print('[ERROR] 缺少 DATABASE_URL, 请在 .env 文件中配置', file=sys.stderr)
+        raise SystemExit(1)
+
+    if config['app']['env'] == 'production' and not config['redis']['password']:
+        print('[ERROR] 生产环境必须设置 REDIS_PASSWORD', file=sys.stderr)
+        raise SystemExit(1)
+
+    if config['app']['env'] == 'production':
+        origins = config['app']['allowed_origins']
+        if '*' in origins:
+            print('[ERROR] 生产环境 ALLOWED_ORIGINS 禁止包含 *', file=sys.stderr)
+            raise SystemExit(1)
+
+    if not config['redis']['password'] and config['app']['env'] != 'production':
+        print('[WARN] REDIS_PASSWORD 未设置，开发环境 Redis 无密码', file=sys.stderr)
+
+    if config['auth']['enabled']:
+        secret = config['auth']['jwt_secret']
+        if not secret or len(secret) < 32:
+            print('[ERROR] AUTH_ENABLED=true 时 JWT_SECRET 必填且长度 ≥ 32 字符', file=sys.stderr)
+            raise SystemExit(1)
+
     print('[OK] 配置校验通过')

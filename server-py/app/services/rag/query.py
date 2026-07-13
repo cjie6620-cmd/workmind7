@@ -59,9 +59,10 @@ async def retrieve_docs(question, category=None, k=None):
         'candidates': len(candidates),
     })
 
-    # ② CrossEncoder 精排
+    # ② CrossEncoder 精排（线程池执行，避免阻塞事件循环）
+    import asyncio
     reranker = get_reranker()
-    ranked = reranker.rerank(question, candidates, top_n=k)
+    ranked = await asyncio.to_thread(reranker.rerank, question, candidates, top_n=k)
 
     logger.info('rag: retrieval complete', {
         'question': question[:40],

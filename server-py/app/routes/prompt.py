@@ -29,6 +29,9 @@ from ..services.model import create_chat_model
 from ..services.prompt.prompt_service import (
     list_templates, get_template, save_template, delete_template, score_ab_test,
 )
+from ..schemas.requests import (
+    PromptTestRequest, PromptAbTestRequest, PromptTemplateRequest,
+)
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
@@ -36,7 +39,7 @@ prompt_router = APIRouter()
 
 
 @prompt_router.post('/test/stream')
-async def prompt_test_stream(req: dict):
+async def prompt_test_stream(req: PromptTestRequest):
     """
     测试 Prompt 接口
 
@@ -45,10 +48,10 @@ async def prompt_test_stream(req: dict):
     第三步：流式调用模型，实时推送 token
     第四步：统计 Token 用量，计算费用并返回
     """
-    system_prompt = req.get('systemPrompt', '')
-    user_message = (req.get('userMessage') or '').strip()
-    temperature = req.get('temperature', 0.7)
-    max_tokens = req.get('maxTokens', 1000)
+    system_prompt = req.systemPrompt
+    user_message = req.userMessage.strip()
+    temperature = req.temperature
+    max_tokens = req.maxTokens
 
     if not user_message:
         return JSONResponse(status_code=400, content={'error': {'message': '测试消息不能为空'}})
@@ -98,7 +101,7 @@ async def prompt_test_stream(req: dict):
 
 
 @prompt_router.post('/ab-test/stream')
-async def prompt_ab_test_stream(req: dict):
+async def prompt_ab_test_stream(req: PromptAbTestRequest):
     """
     A/B 测试接口（SSE 流式）
 
@@ -114,10 +117,10 @@ async def prompt_ab_test_stream(req: dict):
     - eval_done: 评分结果
     - done: 整个流结束
     """
-    question = (req.get('question') or '').strip()
-    system_prompt_a = req.get('systemPromptA', '')
-    system_prompt_b = req.get('systemPromptB', '')
-    temperature = req.get('temperature', 0)
+    question = req.question.strip()
+    system_prompt_a = req.systemPromptA
+    system_prompt_b = req.systemPromptB
+    temperature = req.temperature
     max_tokens = req.get('maxTokens', 800)
 
     if not question:
@@ -206,26 +209,26 @@ async def get_prompt_template(template_id: str):
 
 
 @prompt_router.post('/templates')
-async def create_prompt_template(req: dict):
+async def create_prompt_template(req: PromptTemplateRequest):
     """
     创建 Prompt 模板
 
     参数：name（名称）、systemPrompt（内容）、description（描述）、tags（标签）
     """
-    name = (req.get('name') or '').strip()
-    system_prompt = (req.get('systemPrompt') or '').strip()
+    name = req.name.strip()
+    system_prompt = req.systemPrompt.strip()
     if not name or not system_prompt:
         return JSONResponse(status_code=400, content={'error': {'message': '模板名称和内容不能为空'}})
-    template = await save_template(name, system_prompt, req.get('description', ''), req.get('tags', []))
+    template = await save_template(name, system_prompt, req.description, req.tags)
     return {'success': True, 'template': template}
 
 
 @prompt_router.put('/templates/{template_id}')
-async def update_prompt_template(template_id: str, req: dict):
+async def update_prompt_template(template_id: str, req: PromptTemplateRequest):
     """更新模板（同时保存历史版本）"""
     template = await save_template(
-        req.get('name', ''), req.get('systemPrompt', ''),
-        req.get('description', ''), req.get('tags', []),
+        req.name, req.systemPrompt,
+        req.description, req.tags,
         existing_id=template_id,
     )
     return {'success': True, 'template': template}

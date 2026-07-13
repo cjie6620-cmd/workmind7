@@ -29,6 +29,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..services.workflow.workflows import WORKFLOW_BUILDERS, WORKFLOW_META
 from ..services.config.config_service import list_configs as list_wf_configs
+from ..schemas.requests import WorkflowStartRequest, WorkflowResumeRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 
@@ -82,7 +83,7 @@ async def get_templates():
 
 
 @workflow_router.post('/start/stream')
-async def start_workflow_stream(req: dict):
+async def start_workflow_stream(req: WorkflowStartRequest):
     """
     启动工作流
 
@@ -98,8 +99,8 @@ async def start_workflow_stream(req: dict):
     - paused: 等待人工审核（人工节点）
     - completed: 工作流完成
     """
-    workflow_id = req.get('workflowId')
-    input_data = req.get('input', {})
+    workflow_id = req.workflowId
+    input_data = req.input
 
     if not workflow_id or workflow_id not in WORKFLOW_BUILDERS:
         return JSONResponse(status_code=400, content={'error': {'message': f'未知工作流：{workflow_id}'}})
@@ -185,7 +186,7 @@ async def start_workflow_stream(req: dict):
 
 
 @workflow_router.post('/resume/stream')
-async def resume_workflow_stream(req: dict):
+async def resume_workflow_stream(req: WorkflowResumeRequest):
     """
     恢复被中断的工作流
 
@@ -194,8 +195,8 @@ async def resume_workflow_stream(req: dict):
     第三步：重新执行工作流，流式推送节点状态和 token
     第四步：推送最终结果，清理工作流实例
     """
-    thread_id = req.get('threadId')
-    feedback = req.get('feedback', '')
+    thread_id = req.threadId
+    feedback = req.feedback
 
     wf = active_workflows.get(thread_id)
     if not wf:

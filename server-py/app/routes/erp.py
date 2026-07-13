@@ -27,6 +27,7 @@ from ..services.erp.parser import parse_expense_form, parse_leave_form
 from ..services.erp.approval import run_approval_flow, APPROVAL_ROLES
 from ..core.database import async_session_factory
 from ..models.entities import ApprovalRecord
+from ..schemas.requests import ErpParseRequest, ErpSubmitRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 from pydantic import ValidationError
@@ -38,14 +39,14 @@ _active_apps = {}
 
 
 @erp_router.post('/parse')
-async def erp_parse(req: dict):
+async def erp_parse(req: ErpParseRequest):
     """
     表单解析接口
 
     校验输入 → 调用解析器提取结构化字段 → 返回表单数据
     """
-    text = (req.get('text') or '').strip()
-    form_type = req.get('formType')
+    text = req.text.strip()
+    form_type = req.formType
 
     if not text:
         return JSONResponse(status_code=400, content={'error': {'message': '描述不能为空'}})
@@ -72,7 +73,7 @@ async def erp_parse(req: dict):
 
 
 @erp_router.post('/submit/stream')
-async def erp_submit_stream(req: dict):
+async def erp_submit_stream(req: ErpSubmitRequest):
     """
     提交申请接口
 
@@ -89,9 +90,9 @@ async def erp_submit_stream(req: dict):
     - final: 最终结果
     - done: 完成
     """
-    form_data = req.get('formData')
-    form_type = req.get('formType')
-    applicant_name = req.get('applicantName', '申请人')
+    form_data = req.formData
+    form_type = req.formType
+    applicant_name = req.applicantName
 
     if not form_data or not form_type:
         return JSONResponse(status_code=400, content={'error': {'message': '缺少表单数据'}})

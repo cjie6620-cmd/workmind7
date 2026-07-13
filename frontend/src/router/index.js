@@ -1,8 +1,14 @@
 // frontend/src/router/index.js
-// 路由配置：每个模块对应一个一级路由
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth.js'
 
 const routes = [
+  {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { title: '登录', public: true },
+  },
   {
     path: '/',
     redirect: '/chat',
@@ -41,13 +47,13 @@ const routes = [
     path: '/prompt',
     name: 'Prompt',
     component: () => import('@/views/PromptView.vue'),
-    meta: { title: 'Prompt 调试', icon: '🔧' },
+    meta: { title: 'Prompt 调试', icon: '🔧', adminOnly: true },
   },
   {
     path: '/monitor',
     name: 'Monitor',
     component: () => import('@/views/MonitorView.vue'),
-    meta: { title: '用量看板', icon: '📊' },
+    meta: { title: '用量看板', icon: '📊', adminOnly: true },
   },
 ]
 
@@ -56,7 +62,31 @@ const router = createRouter({
   routes,
 })
 
-// 路由切换时更新页面 title
+router.beforeEach((to, from, next) => {
+  const authStore = useAuthStore()
+
+  if (to.meta.public) {
+    if (to.path === '/login' && authStore.isLoggedIn) {
+      next('/chat')
+    } else {
+      next()
+    }
+    return
+  }
+
+  if (!authStore.isLoggedIn) {
+    next({ path: '/login', query: { redirect: to.fullPath } })
+    return
+  }
+
+  if (to.meta.adminOnly && !authStore.isAdmin) {
+    next('/chat')
+    return
+  }
+
+  next()
+})
+
 router.afterEach((to) => {
   document.title = `${to.meta.title || 'Mr.Chen'} — Mr.Chen AI`
 })

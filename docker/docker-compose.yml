@@ -1,7 +1,7 @@
 # workmind7 独立中间件（与 culture-agent / rag-eval 端口隔离）
 # 启动：docker compose up -d
 # 停服：docker compose down
-# 初始化表：cd server-py && python -m scripts.init_db
+# 空库首次启动自动执行 sql/init-db.sql；亦可 alembic upgrade head
 name: workmind7
 
 services:
@@ -17,7 +17,7 @@ services:
       POSTGRES_DB: ${WM_PG_DB:-workmind_vector}
     volumes:
       - wm_pg_data:/var/lib/postgresql/data
-      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ../sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${WM_PG_USER:-workmind} -d ${WM_PG_DB:-workmind_vector}"]
       interval: 10s
@@ -29,12 +29,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: workmind7-redis
+    command: redis-server --requirepass ${WM_REDIS_PASSWORD:-workmind_dev}
     ports:
-      - "${WM_REDIS_PORT:-6381}:6379"
+      - "127.0.0.1:${WM_REDIS_PORT:-6381}:6379"
     volumes:
       - wm_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${WM_REDIS_PASSWORD:-workmind_dev}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

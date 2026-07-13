@@ -299,11 +299,10 @@ npm run dev
 - ✅ 自动创建数据表（documents、rag_chunks、conversations、approval_records、agent_configs、monitor_records）
 - ✅ 填充默认配置种子数据（Prompt 模板、Agent 配置、工作流模板）
 
-如需手动初始化：
+如需手动初始化（与 `alembic 001_baseline` 等价）：
 
 ```bash
-cd server-py/scripts
-psql -U <user> -d <database> -f init_pgvector.sql
+psql -U <user> -d <database> -f sql/init-db.sql
 ```
 
 ---

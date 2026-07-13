@@ -16,6 +16,36 @@ from pgvector.sqlalchemy import Vector
 from ..core.database import Base
 
 
+class User(Base):
+    """
+    用户表
+
+    存储登录账号与角色，密码为 bcrypt 哈希
+    """
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, comment="用户唯一标识，与 JWT sub 一致")
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, comment="登录用户名")
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False, comment="bcrypt 密码哈希")
+    role: Mapped[str] = mapped_column(String(20), default="user", comment="角色：user / admin")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, comment="创建时间")
+
+
+class SystemSetting(Base):
+    """
+    系统配置表
+
+    持久化预算上限等全局设置
+    """
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True, comment="配置键")
+    value: Mapped[dict] = mapped_column(JSONB, default=dict, comment="配置值 JSON")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间"
+    )
+
+
 class Document(Base):
     """
     文档表
@@ -73,6 +103,7 @@ class Conversation(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="所属用户 ID")
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system
     content: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

@@ -209,7 +209,7 @@ async def run_agent(task, emit_event):
     except Exception as err:
         tb_str = traceback.format_exc()
         logger.error('agent: execution failed', {'error': str(err), 'traceback': tb_str})
-        await emit_event('error', {'message': str(err), 'traceback': tb_str})
+        await emit_event('error', {'message': str(err)})
 
 
 def get_tool_list():

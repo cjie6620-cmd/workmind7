@@ -20,22 +20,31 @@ import asyncio
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+from ..auth.dependencies import get_current_user
+from ..auth.models import UserContext
 from ..services.agent.agent import run_agent, get_tool_list
 from ..services.chat.memory import save_message, get_history_db, get_session_info
 from ..services.config.config_service import list_configs as list_agent_configs
 from ..middleware import check_injection
+from ..schemas.requests import AgentRunRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
+from ..utils.session_guard import assert_session_owner
+from ..utils.agent_context import agent_user_scope
 
 agent_router = APIRouter()
 
 
 @agent_router.post('/run')
-async def agent_run(req: dict):
+async def agent_run(
+    req: AgentRunRequest,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+):
     """
     启动 Agent 执行任务
 
@@ -50,8 +59,10 @@ async def agent_run(req: dict):
     - token: 响应 token
     - done: 执行完成
     """
-    task = (req.get('task') or '').strip()
-    session_id = req.get('sessionId') or f'agent_{uuid.uuid4().hex[:12]}'
+    task = req.task.strip()
+    session_id = req.sessionId or f'agent_{user.user_id}_{uuid.uuid4().hex[:12]}'
+
+    await assert_session_owner(session_id, user.user_id)
 
     # 参数校验
     if not task:
@@ -74,36 +85,42 @@ async def agent_run(req: dict):
 
     async def run_task():
         """后台执行 Agent 任务"""
-        full_answer = ''
         try:
-            # 持久化用户任务
-            await save_message(session_id, 'user', task)
-
-            await run_agent(task, collect_event)
+            async with agent_user_scope(user.user_id):
+                await save_message(session_id, 'user', task, user_id=user.user_id)
+                await run_agent(task, collect_event)
+        except asyncio.CancelledError:
+            logger.info('agent route: task cancelled', {'sessionId': session_id})
+            raise
         except Exception as err:
             logger.error('agent route: task failed', {'error': str(err)})
             await queue.put(sse_error(err))
         finally:
             done_event.set()
-            # 持久化 AI 回答
             answer_text = ''.join(full_answer)
             if answer_text:
-                await save_message(session_id, 'assistant', answer_text)
+                await save_message(session_id, 'assistant', answer_text, user_id=user.user_id)
 
-    # 异步启动任务，不阻塞响应
-    asyncio.create_task(run_task())
+    run_task_handle = asyncio.create_task(run_task())
 
     async def event_generator():
         """SSE 事件生成器"""
         yield sse_event('start', {'task': task, 'sessionId': session_id, 'timestamp': datetime.now().isoformat()})
-        # 循环直到任务完成且队列清空
-        while not done_event.is_set() or not queue.empty():
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.5)
-                yield item
-            except asyncio.TimeoutError:
-                continue
-        yield sse_event('done', {'sessionId': session_id})
+        try:
+            while not done_event.is_set() or not queue.empty():
+                if await request.is_disconnected():
+                    run_task_handle.cancel()
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    yield item
+                except asyncio.TimeoutError:
+                    continue
+            if not run_task_handle.cancelled() and done_event.is_set():
+                yield sse_event('done', {'sessionId': session_id})
+        finally:
+            if not run_task_handle.done():
+                run_task_handle.cancel()
 
     return EventSourceResponse(event_generator())
 
@@ -176,28 +193,28 @@ async def agent_examples():
 # ── 报告管理 ─────────────────────────────────────────────────
 
 @agent_router.get('/reports')
-async def agent_reports():
-    """列出 Agent 生成的所有报告（仅元数据）"""
+async def agent_reports(user: UserContext = Depends(get_current_user)):
+    """列出当前用户 Agent 生成的报告（仅元数据）"""
     from ..services.agent.report_store import list_reports
-    return {'reports': list_reports()}
+    return {'reports': list_reports(user.user_id)}
 
 
 @agent_router.get('/reports/{report_id}')
-async def agent_report_detail(report_id: str):
+async def agent_report_detail(report_id: str, user: UserContext = Depends(get_current_user)):
     """获取单个报告的完整内容"""
     from ..services.agent.report_store import get_report
-    report = get_report(report_id)
+    report = get_report(report_id, user.user_id)
     if not report:
         return JSONResponse(status_code=404, content={'error': {'message': '报告不存在或已过期'}})
     return {'report': report}
 
 
 @agent_router.get('/reports/{report_id}/download')
-async def agent_report_download(report_id: str):
+async def agent_report_download(report_id: str, user: UserContext = Depends(get_current_user)):
     """下载报告为 Markdown 文件"""
     from ..services.agent.report_store import get_report
     from fastapi.responses import Response
-    report = get_report(report_id)
+    report = get_report(report_id, user.user_id)
     if not report:
         return JSONResponse(status_code=404, content={'error': {'message': '报告不存在或已过期'}})
     title = report['meta']['title']
@@ -210,25 +227,26 @@ async def agent_report_download(report_id: str):
 
 
 @agent_router.delete('/reports/{report_id}')
-async def agent_report_delete(report_id: str):
+async def agent_report_delete(report_id: str, user: UserContext = Depends(get_current_user)):
     """删除报告"""
     from ..services.agent.report_store import delete_report
-    ok = delete_report(report_id)
+    ok = delete_report(report_id, user.user_id)
     if not ok:
         return JSONResponse(status_code=500, content={'error': {'message': '删除失败'}})
     return {'success': True}
 
 
 @agent_router.get('/history/{session_id}')
-async def get_agent_history(session_id: str):
+async def get_agent_history(session_id: str, user: UserContext = Depends(get_current_user)):
     """获取 Agent 任务历史"""
+    await assert_session_owner(session_id, user.user_id)
     info = await get_session_info(session_id)
     return info
 
 
 @agent_router.get('/sessions')
-async def get_agent_sessions():
-    """获取 Agent 所有会话列表"""
+async def get_agent_sessions(user: UserContext = Depends(get_current_user)):
+    """获取当前用户的 Agent 会话列表"""
     from sqlalchemy import select, func
     from ..core.database import async_session_factory
     from ..models.entities import Conversation
@@ -241,6 +259,7 @@ async def get_agent_sessions():
                 func.min(Conversation.created_at).label('created_at'),
             )
             .where(Conversation.session_id.like('agent_%'))
+            .where(Conversation.user_id == user.user_id)
             .group_by(Conversation.session_id)
             .order_by(func.min(Conversation.created_at).desc())
         )

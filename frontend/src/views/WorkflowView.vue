@@ -99,12 +99,11 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
 import { useWorkflowStore } from '@/stores/workflow.js'
 import { useAppStore } from '@/stores/app.js'
 import WorkflowGraph from '@/components/workflow/WorkflowGraph.vue'
 import HumanReviewPanel from '@/components/workflow/HumanReviewPanel.vue'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const wfStore  = useWorkflowStore()
 const appStore = useAppStore()
@@ -112,11 +111,7 @@ const appStore = useAppStore()
 const mainInput  = ref('')
 const extraValue = ref('')
 
-marked.setOptions({
-  highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : c,
-  breaks: true,
-})
-function renderMd(t) { try { return marked(t || '') } catch { return t } }
+function renderMd(t) { return renderMarkdown(t) }
 
 const currentMeta = computed(() =>
   wfStore.templates.find(t => t.id === wfStore.selectedTemplate) || null

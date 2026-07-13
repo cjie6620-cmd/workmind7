@@ -127,9 +127,8 @@
 
 <script setup>
 import { ref, watch, nextTick, reactive } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
 import { useKnowledgeStore } from '@/stores/knowledge.js'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const knStore   = useKnowledgeStore()
 const listEl    = ref(null)
@@ -144,19 +143,6 @@ const exampleQuestions = [
   '差旅费报销标准是多少？',
   '产品的主要功能有哪些？',
 ]
-
-marked.setOptions({
-  highlight: (code, lang) => {
-    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value
-    return hljs.highlightAuto(code).value
-  },
-  breaks: true,
-})
-
-function renderMarkdown(text) {
-  if (!text) return ''
-  try { return marked(text) } catch { return text }
-}
 
 function handleEnter(e) {
   if (e.shiftKey) return   // Shift+Enter 换行

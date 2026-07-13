@@ -127,17 +127,25 @@ export const useChatStore = defineStore('chat', () => {
 
   // ── 用户画像 ──────────────────────────────────────────────────
   const profile = ref({})
-  const userId  = ref('user-demo')
 
   async function loadProfile() {
     try {
-      const data = await http.get(`/chat/profile/${userId.value}`)
+      const data = await http.get('/chat/profile')
       profile.value = data
     } catch {}
   }
 
   // ── 发送消息（核心）──────────────────────────────────────────
   const loading = ref(false)
+  let abortController = null
+
+  function stopGenerate() {
+    if (abortController) {
+      abortController.abort()
+      abortController = null
+    }
+    loading.value = false
+  }
 
   async function sendMessage(text) {
     if (!text.trim() || loading.value) return
@@ -170,15 +178,17 @@ export const useChatStore = defineStore('chat', () => {
     // 获取数组中实际的消息对象引用（确保响应式）
     const aiMsgRef = session.messages[session.messages.length - 1]
 
+    abortController = new AbortController()
+
     await fetchStream(
       '/api/chat/stream',
       {
         message:   text,
         sessionId: currentId.value,
         role:      selectedRole.value,
-        userId:    userId.value,
       },
       {
+        signal: abortController.signal,
         onToken: (token) => {
           aiMsgRef.content += token
         },
@@ -211,9 +221,8 @@ export const useChatStore = defineStore('chat', () => {
     )
 
     loading.value = false
+    abortController = null
   }
-
-  // 重新生成最后一条 AI 回复
   async function regenerate() {
     const msgs = currentSession.value?.messages || []
     // 找最后一条用户消息
@@ -238,10 +247,10 @@ export const useChatStore = defineStore('chat', () => {
   return {
     sessions, currentId, currentSession, messages,
     selectedRole, roles,
-    profile, userId,
+    profile,
     loading,
     init, newSession, switchSession, deleteSession,
     loadRoles, loadProfile,
-    sendMessage, regenerate, copyMessage,
+    sendMessage, regenerate, copyMessage, stopGenerate,
   }
 })

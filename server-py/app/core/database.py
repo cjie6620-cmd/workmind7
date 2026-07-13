@@ -20,9 +20,11 @@ class Base(DeclarativeBase):
     pass
 
 
-# 从配置读取数据库 URL
+# 从配置读取数据库 URL（唯一来源，无 fallback）
 _db_config = app_config.get('database', {})
-DB_URL = _db_config.get('url', 'postgresql+asyncpg://ai_love:zx4221335@localhost:5432/ai_love_vector')
+DB_URL = _db_config.get('url')
+if not DB_URL:
+    raise RuntimeError('DATABASE_URL 未配置，请在 .env 中设置')
 
 # 异步引擎（推荐用于 FastAPI）
 async_engine = create_async_engine(
@@ -82,65 +84,49 @@ async def init_db():
     """
     初始化数据库表结构
 
-    仅在首次部署时调用，或使用 alembic 进行 migrations
+    开发专用；生产环境请使用 alembic upgrade head
     """
-    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord
+    from ..models.entities import (
+        RagChunk, Conversation, ApprovalRecord, AgentConfig,
+        Document, MonitorRecord, User, SystemSetting,
+    )
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
-# 表状态缓存，避免每次健康检查都执行 inspect
-_tables_status: dict | None = None
-
-
-async def check_tables() -> dict:
+async def check_tables_status() -> dict:
     """
-    检查数据库表是否存在，缺失时自动建表
-
-    首次调用时执行检查并缓存结果，后续调用直接返回缓存。
+    检查数据库表是否存在（不自动建表）
     """
-    global _tables_status
-    if _tables_status is not None:
-        return _tables_status
-
     from sqlalchemy import inspect as sa_inspect
 
-    # 检测数据库连接和现有表
     try:
         async with async_engine.connect() as conn:
             def _check(sync_conn):
                 inspector = sa_inspect(sync_conn)
                 return set(inspector.get_table_names())
+
             existing = await conn.run_sync(_check)
     except Exception as e:
-        _tables_status = {"status": "unreachable", "message": f"数据库连接失败: {e}"}
-        return _tables_status
+        return {'status': 'unreachable', 'message': f'数据库连接失败: {e}'}
 
-    # 导入模型确保 metadata 已注册
-    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord
+    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord, User, SystemSetting
     required = set(Base.metadata.tables.keys())
     missing = required - existing
 
     if not missing:
-        _tables_status = {"status": "ready", "message": "所有表已就绪"}
-        return _tables_status
+        return {'status': 'ready', 'message': '所有表已就绪'}
 
-    # 有缺失表，自动建表
-    try:
-        await init_db()
-        _tables_status = {
-            "status": "created",
-            "message": f"自动创建了 {len(missing)} 张表",
-            "created_tables": sorted(missing)
-        }
-    except Exception as e:
-        _tables_status = {
-            "status": "error",
-            "message": f"建表失败: {e}",
-            "missing_tables": sorted(missing)
-        }
+    return {
+        'status': 'missing_tables',
+        'message': f'缺少 {len(missing)} 张表，请运行 alembic upgrade head',
+        'missing_tables': sorted(missing),
+    }
 
-    return _tables_status
+
+async def check_tables() -> dict:
+    """兼容旧调用：仅检查状态，不自动建表"""
+    return await check_tables_status()
 
 
 async def close_db():

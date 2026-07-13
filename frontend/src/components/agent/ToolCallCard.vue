@@ -63,8 +63,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const props = defineProps({
   step: { type: Object, required: true },
@@ -76,19 +75,14 @@ watch(() => props.step.status, (s) => { if (s === 'running') expanded.value = tr
 
 const showFullReport = ref(false)
 
-marked.setOptions({
-  highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : c,
-  breaks: true,
-})
+function renderMd(t) {
+  return renderMarkdown(t)
+}
 
 function toggle() {
   if (props.step.status !== 'running') {
     expanded.value = !expanded.value
   }
-}
-
-function renderMd(t) {
-  try { return marked(t || '') } catch { return t }
 }
 
 function downloadReport() {

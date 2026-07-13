@@ -40,10 +40,9 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import { useChatStore } from '@/stores/chat.js'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -56,27 +55,8 @@ const copied    = ref(false)
 const liked     = ref(false)
 const disliked  = ref(false)
 
-// 配置 marked：代码块自动高亮
-marked.setOptions({
-  highlight(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value
-    }
-    return hljs.highlightAuto(code).value
-  },
-  breaks: true,     // 换行转 <br>
-  gfm: true,        // GitHub Flavored Markdown
-})
-
-// 把 Markdown 文本转成 HTML
-const renderedContent = computed(() => {
-  if (!props.message.content) return ''
-  try {
-    return marked(props.message.content)
-  } catch {
-    return props.message.content
-  }
-})
+// 把 Markdown 文本转成安全 HTML
+const renderedContent = computed(() => renderMarkdown(props.message.content))
 
 async function copy() {
   await chatStore.copyMessage(props.message.content)

@@ -224,8 +224,14 @@ async def write_report(title: str, content: str, format: str = 'markdown') -> st
     report = f'# {title}\n\n> 生成时间：{timestamp}\n\n{content}\n\n---\n*由 Mr.Chen AI Agent 自动生成*'
 
     # 持久化保存（Redis 不可用时仅影响列表查询，不影响工具返回）
+    from ...utils.agent_context import get_agent_user_id
     from .report_store import save_report
-    meta = save_report(title, report)
+
+    user_id = get_agent_user_id()
+    if not user_id:
+        return json.dumps({'success': False, 'message': '无法确定报告归属用户'}, ensure_ascii=False)
+
+    meta = save_report(title, report, user_id)
 
     return json.dumps({
         'success': True,

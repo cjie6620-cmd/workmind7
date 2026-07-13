@@ -122,12 +122,11 @@
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
 import { useAgentStore } from '@/stores/agent.js'
 import { useConfigStore } from '@/stores/config.js'
 import { useAppStore } from '@/stores/app.js'
 import ToolCallCard from '@/components/agent/ToolCallCard.vue'
+import { renderMarkdown } from '@/utils/markdown.js'
 
 const agentStore = useAgentStore()
 const configStore = useConfigStore()
@@ -135,8 +134,7 @@ const appStore   = useAppStore()
 const taskText   = ref('')
 const taskListEl = ref(null)
 
-marked.setOptions({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : c, breaks: true })
-function renderMd(t) { try { return marked(t || '') } catch { return t } }
+function renderMd(t) { return renderMarkdown(t) }
 function formatTime(iso) { return iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '' }
 async function runTask() { if (!taskText.value.trim() || agentStore.running) return; const t = taskText.value.trim(); taskText.value = ''; await agentStore.runTask(t) }
 function useExample(task) { if (!agentStore.running) taskText.value = task }

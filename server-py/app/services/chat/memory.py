@@ -88,7 +88,15 @@ async def get_session_info(session_id: str) -> dict:
     }
 
 
-async def save_message(session_id: str, role: str, content: str, model: str = None, tokens: int = None, metadata: dict = None):
+async def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    model: str = None,
+    tokens: int = None,
+    metadata: dict = None,
+    user_id: str = None,
+):
     """
     保存单条消息到 PostgreSQL
 
@@ -103,6 +111,7 @@ async def save_message(session_id: str, role: str, content: str, model: str = No
     async with async_session_factory() as session:
         msg = Conversation(
             session_id=session_id,
+            user_id=user_id,
             role=role,
             content=content,
             model=model,
@@ -134,13 +143,15 @@ async def save_messages_batch(session_id: str, messages: List[dict]):
         await session.commit()
 
 
-async def clear_history(session_id: str):
-    """删除指定会话的所有消息"""
+async def clear_history(session_id: str, user_id: str = None):
+    """删除指定会话的所有消息（可选按 user_id 限定）"""
     from sqlalchemy import delete
+
     async with async_session_factory() as session:
-        await session.execute(
-            delete(Conversation).where(Conversation.session_id == session_id)
-        )
+        stmt = delete(Conversation).where(Conversation.session_id == session_id)
+        if user_id:
+            stmt = stmt.where(Conversation.user_id == user_id)
+        await session.execute(stmt)
         await session.commit()
 
 
@@ -340,12 +351,12 @@ def clear_history_sync(session_id):
     _memory_store.pop(session_id, None)
 
 
-async def list_sessions() -> List[dict]:
-    """获取所有会话列表（从 PostgreSQL），包含标题和消息数"""
+async def list_sessions(user_id: str = None) -> List[dict]:
+    """获取会话列表（可按 user_id 过滤），包含标题和消息数"""
     from sqlalchemy import select, func
 
     async with async_session_factory() as session:
-        result = await session.execute(
+        stmt = (
             select(
                 Conversation.session_id,
                 func.count(Conversation.id).label('message_count'),
@@ -354,6 +365,10 @@ async def list_sessions() -> List[dict]:
             .group_by(Conversation.session_id)
             .order_by(func.min(Conversation.created_at).desc())
         )
+        if user_id:
+            stmt = stmt.where(Conversation.user_id == user_id)
+
+        result = await session.execute(stmt)
         rows = result.all()
 
         sessions = []

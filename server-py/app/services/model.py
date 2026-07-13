@@ -74,10 +74,10 @@ class _LocalEmbeddings:
         return self.model.encode([text], normalize_embeddings=True)[0].tolist()
 
     async def aembed_documents(self, texts):
-        return self.embed_documents(texts)
+        return await asyncio.to_thread(self.embed_documents, texts)
 
     async def aembed_query(self, text):
-        return self.embed_query(text)
+        return await asyncio.to_thread(self.embed_query, text)
 
 
 # 向量化模型延迟加载（bge-m3 约 2.2GB，首次加载慢）

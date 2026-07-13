@@ -1,15 +1,7 @@
 """
 中间件配置模块
 
-包含以下中间件功能：
-1. CORS：跨域资源共享配置
-2. 限流：令牌桶算法全局限流
-3. 请求日志：记录每个请求的方法、路径、状态码、耗时、traceId
-4. Prompt 注入检测：防止恶意提示词注入攻击
-5. 输入校验：使用 Pydantic 模型验证请求参数
-
-注意：使用纯 ASGI 中间件（StreamingSafeMiddleware）替代 BaseHTTPMiddleware，
-避免对流式响应（SSE）的缓冲。
+包含：CORS、Redis 分布式限流、请求日志、JWT 认证、Prompt 注入检测
 """
 
 import re
@@ -23,9 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import config
+from .auth.middleware_utils import is_auth_enabled, is_public_api_path, resolve_auth_user
+from .utils.logger import logger
 
-
-# ── 输入校验模型（替代 Zod） ──────────────────────────────────
 
 class ChatRequest(BaseModel):
     """聊天请求参数校验模型"""
@@ -35,69 +27,28 @@ class ChatRequest(BaseModel):
     sessionId: str = Field(default='default', alias='session_id')
     systemPrompt: str = Field(default='', max_length=2000, alias='system_prompt')
     role: str = 'default'
-    userId: str = Field(default='anonymous', alias='user_id')
 
     @field_validator('message')
     @classmethod
     def message_not_empty(cls, v):
-        """校验消息内容非空（去除首尾空格后）"""
         if not v.strip():
             raise ValueError('消息不能为空')
         return v
 
 
-# ── 令牌桶限流器（全局，与 Node 版一致）──────────────────────
-
-class TokenBucket:
-    """
-    令牌桶算法限流器
-
-    原理：桶内有一定数量的令牌，每次请求消耗一个令牌，
-    令牌按固定速率 refill_rate 补充到桶中。
-    """
-
-    def __init__(self, capacity=30, refill_rate=10.0):
-        self.capacity = capacity          # 桶容量
-        self.refill_rate = refill_rate    # 每秒补充令牌数
-        self.tokens = capacity            # 当前令牌数
-        self.last_refill = time.time()    # 上次补充时间
-
-    def consume(self):
-        """尝试消费一个令牌，返回是否成功"""
-        now = time.time()
-        elapsed = now - self.last_refill
-        # 按时间补充令牌（不超过容量上限）
-        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
-        self.last_refill = now
-        if self.tokens >= 1:
-            self.tokens -= 1
-            return True
-        return False
-
-
-# 全局限流器实例
-_bucket = TokenBucket()
-
-
-# ── Prompt 注入检测 ───────────────────────────────────────────
-
-# 常见 Prompt 注入模式正则表达式
 INJECTION_PATTERNS = [
-    re.compile(r'ignore\s+(all\s+)?previous\s+instructions?', re.I),    # 忽略之前指令
-    re.compile(r'forget\s+(all\s+)?previous', re.I),                  # 忘记之前内容
-    re.compile(r'忽略(所有)?之前的指令'),                               # 中文变体
-    re.compile(r'你现在是(?!前端|后端|技术|办公)'),                       # 角色扮演注入
-    re.compile(r'新的?系统提示'),                                       # 覆盖系统提示
-    re.compile(r'act as (?!a helpful)', re.I),                         # 英文角色扮演
+    re.compile(r'ignore\s+(all\s+)?previous\s+instructions?', re.I),
+    re.compile(r'forget\s+(all\s+)?previous', re.I),
+    re.compile(r'忽略(所有)?之前的指令'),
+    re.compile(r'你现在是(?!前端|后端|技术|办公)'),
+    re.compile(r'新的?系统提示'),
+    re.compile(r'act as (?!a helpful)', re.I),
 ]
 
 
 def check_injection(message: str) -> bool:
-    """检测消息是否包含 Prompt 注入特征"""
     return any(p.search(message) for p in INJECTION_PATTERNS)
 
-
-# ── 中间件注册 ───────────────────────────────────────────────
 
 SSE_PATHS = {
     '/api/chat/stream',
@@ -106,19 +57,75 @@ SSE_PATHS = {
     '/api/workflow/resume/stream',
     '/api/erp/submit/stream',
     '/api/prompt/test/stream',
+    '/api/prompt/ab-test/stream',
     '/api/knowledge/query/stream',
 }
 
+# 昂贵接口限流更严
+STRICT_RATE_PATHS = {
+    '/api/agent/run',
+    '/api/knowledge/query/stream',
+    '/api/chat/stream',
+}
+
+DEFAULT_RATE_LIMIT = 30
+STRICT_RATE_LIMIT = 10
+RATE_WINDOW_SEC = 60
+
+
+def _rate_limit_key(scope: Scope, path: str) -> str:
+    """按 userId（已认证）或 IP 维度限流"""
+    state = scope.get('state', {})
+    auth_user = state.get('auth_user')
+    if auth_user and hasattr(auth_user, 'user_id'):
+        return f'rate:user:{auth_user.user_id}:{path}'
+    client = scope.get('client')
+    ip = client[0] if client else 'unknown'
+    return f'rate:ip:{ip}:{path}'
+
+
+def _check_rate_limit(scope: Scope, path: str) -> bool:
+    """Redis 滑动窗口限流，失败时回退允许通过"""
+    limit = STRICT_RATE_LIMIT if path in STRICT_RATE_PATHS else DEFAULT_RATE_LIMIT
+    key = _rate_limit_key(scope, path)
+
+    try:
+        from .core.redis_client import get_redis
+        r = get_redis()
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, RATE_WINDOW_SEC)
+        count, _ = pipe.execute()
+        return int(count) <= limit
+    except Exception:
+        return _fallback_bucket.consume()
+
+
+class TokenBucket:
+    """进程内限流回退"""
+
+    def __init__(self, capacity=30, refill_rate=10.0):
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self.tokens = capacity
+        self.last_refill = time.time()
+
+    def consume(self):
+        now = time.time()
+        elapsed = now - self.last_refill
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        self.last_refill = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+
+_fallback_bucket = TokenBucket()
+
 
 class StreamingSafeMiddleware:
-    """
-    纯 ASGI 中间件，不会缓冲流式响应。
-
-    替代 BaseHTTPMiddleware（@app.middleware('http')），
-    后者的 call_next() 会把整个响应体读进内存，导致 SSE 事件全部缓冲后一次性返回。
-    本中间件直接操作 scope/receive/send，对 send 做轻量包装，
-    数据直接流向客户端，不经过任何内存缓冲。
-    """
+    """纯 ASGI 中间件，不缓冲流式响应"""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -129,13 +136,29 @@ class StreamingSafeMiddleware:
             return
 
         path = scope.get('path', '')
+        method = scope.get('method', 'GET')
 
-        # 从请求头提取 traceId
         raw_headers = dict(scope.get('headers', []))
         trace_id = raw_headers.get(b'x-trace-id', str(uuid.uuid4()).encode()).decode()
 
-        # 限流检查
-        if not _bucket.consume():
+        if path.startswith('/api/') and not is_public_api_path(path, method):
+            auth_user = resolve_auth_user(scope)
+            if auth_user is None:
+                resp = JSONResponse(
+                    status_code=401,
+                    content={'error': {'code': 'UNAUTHORIZED', 'message': '未认证，请先登录'}},
+                )
+                await resp(scope, receive, send)
+                return
+            state = scope.setdefault('state', {})
+            state['auth_user'] = auth_user
+        elif is_auth_enabled():
+            auth_user = resolve_auth_user(scope)
+            if auth_user is not None:
+                state = scope.setdefault('state', {})
+                state['auth_user'] = auth_user
+
+        if not _check_rate_limit(scope, path):
             resp = JSONResponse(
                 status_code=429,
                 content={'error': {'code': 'RATE_LIMIT', 'message': '请求太频繁，请稍后重试'}},
@@ -143,7 +166,6 @@ class StreamingSafeMiddleware:
             await resp(scope, receive, send)
             return
 
-        # SSE 路径：限流 + traceId，直接透传不缓冲
         if path in SSE_PATHS:
             async def send_sse(message):
                 if message['type'] == 'http.response.start':
@@ -154,7 +176,6 @@ class StreamingSafeMiddleware:
             await self.app(scope, receive, send_sse)
             return
 
-        # 普通路径：限流 + traceId + 计时 + 日志
         start = time.time()
         status_code = 0
 
@@ -171,21 +192,18 @@ class StreamingSafeMiddleware:
 
         ms = round((time.time() - start) * 1000, 1)
         method = scope.get('method', '?')
-        level = 'ERROR' if status_code >= 500 else ('WARN' if status_code >= 400 else 'INFO')
-        print(f'[{level}] {method} {path} {status_code} {ms}ms [{trace_id[:8]}]')
+        level_name = 'error' if status_code >= 500 else ('warning' if status_code >= 400 else 'info')
+        log_fn = getattr(logger, level_name, logger.info)
+        log_fn(f'{method} {path} {status_code} {ms}ms trace={trace_id[:8]}')
 
 
 def setup_middleware(app: FastAPI):
-    """注册所有中间件到 FastAPI 应用"""
-
-    # CORS 中间件：允许指定来源的跨域请求
+    """注册所有中间件"""
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config['app']['allowed_origins'],
         allow_credentials=True,
-        allow_methods=['*'],
-        allow_headers=['*'],
+        allow_methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allow_headers=['Content-Type', 'Authorization', 'X-Trace-Id', 'X-API-Key'],
     )
-
-    # 纯 ASGI 中间件：限流 + traceId + 日志（不缓冲流式响应）
     app.add_middleware(StreamingSafeMiddleware)

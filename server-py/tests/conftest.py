@@ -23,8 +23,18 @@ if SERVER_PY not in sys.path:
     sys.path.insert(0, SERVER_PY)
 
 # 第二步：设置测试环境变量（必须在 import app 之前）
+# 可通过 TEST_DATABASE_URL 覆盖；本地默认与 docker-compose 端口 5434 对齐
 os.environ.setdefault('DEEPSEEK_API_KEY', 'test-deepseek-key-for-testing')
-os.environ.setdefault('DATABASE_URL', 'postgresql+asyncpg://ai_love:zx4221335@localhost:5433/ai_love_vector_test')
+os.environ.setdefault(
+    'DATABASE_URL',
+    os.environ.get(
+        'TEST_DATABASE_URL',
+        'postgresql+asyncpg://test:test@localhost:5434/workmind_test',
+    ),
+)
+# 默认关闭认证，避免现有集成测试需携带 token；test_auth.py 内单独开启
+os.environ.setdefault('AUTH_ENABLED', 'false')
+os.environ.setdefault('JWT_SECRET', 'test-jwt-secret-must-be-at-least-32-chars')
 
 FIXTURES_DIR = Path(__file__).parent / 'fixtures'
 EMBEDDING_DIM = 1024

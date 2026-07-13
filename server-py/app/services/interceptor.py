@@ -74,6 +74,8 @@ class MonitoredChatOpenAI(ChatOpenAI):
             raise
 
     async def ainvoke(self, input, config=None, **kwargs):
+        from .budget_guard import check_budget_before_llm
+        await check_budget_before_llm()
         start = time.time()
         feature = _detect_feature()
         try:
@@ -95,6 +97,8 @@ class MonitoredChatOpenAI(ChatOpenAI):
             raise
 
     async def astream(self, input, config=None, **kwargs):
+        from .budget_guard import check_budget_before_llm
+        await check_budget_before_llm()
         start = time.time()
         feature = _detect_feature()
         chunks = []

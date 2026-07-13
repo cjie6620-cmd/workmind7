@@ -181,10 +181,9 @@ async def get_vector_store() -> PGVectorStore:
 
 async def init_pgvector_schema():
     """
-    初始化 pgvector 扩展和表结构
+    确保 pgvector 扩展可用，并迁移 embedding 列类型（开发环境兼容）。
 
-    - 首次部署时创建扩展和表
-    - 已有数据库时自动迁移 embedding 列从 text 到 vector(1024)
+    表结构由 Alembic 管理，不在此自动建表。
     """
     async with async_session_factory() as session:
         # 创建 pgvector 扩展
@@ -205,13 +204,4 @@ async def init_pgvector_schema():
 
         await session.commit()
 
-    # 确保表结构最新（新增表会自动创建）
-    from ...models.entities import Base
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    logger.info('pgvector: schema initialized')
-
-
-# 导出 asyncio 用到的 engine
-from ...core.database import async_engine
+    logger.info('pgvector: extension ready (tables via alembic upgrade head)')
