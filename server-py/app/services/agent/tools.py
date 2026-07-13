@@ -18,10 +18,12 @@ import json
 import operator
 from datetime import datetime, timedelta
 
+import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from ..rag.query import retrieve_docs
+from ...clients.tavily_client import format_search_response, get_tavily_client
 from ...utils.logger import logger
 
 
@@ -35,7 +37,7 @@ class SearchInput(BaseModel):
 @tool(args_schema=SearchInput)
 async def web_search(query: str) -> str:
     """
-    搜索互联网获取最新技术资讯（MOCK - 返回预置结果）
+    搜索互联网获取最新技术资讯（Tavily）
 
     使用场景：
     - 了解某个技术的最新版本和特性
@@ -44,21 +46,22 @@ async def web_search(query: str) -> str:
     """
     logger.info('tool:search', {'query': query})
 
-    # TODO: 接入真实搜索 API（SearXNG / Bing Web Search / Tavily）
-    mock_results = {
-        'Vue3': 'Vue 3.4.21 是目前最新版本，于2024年3月发布。主要改进：defineModel() 正式稳定，响应式系统性能提升约 56%。',
-        'React': 'React 18.3 是最新稳定版，引入了并发渲染、useTransition、Suspense 改进。',
-        'Vite': 'Vite 5.2 是目前最新版本，使用 Rollup 4 构建，冷启动速度提升 30%。',
-        'DeepSeek': 'DeepSeek-V3 于2024年12月发布，是目前最强的开源 LLM 之一，中文表现优秀。',
-        'TypeScript': 'TypeScript 5.7 是最新版本，新增 noUncheckedSideEffectImports 选项。',
-        '微前端': 'qiankun 2.x 和 wujie 是国内最流行的微前端框架。',
-    }
+    client = get_tavily_client()
+    if not client.is_configured:
+        return f'搜索服务未配置，无法查询「{query}」。'
 
-    # 模糊匹配
-    for key, val in mock_results.items():
-        if key.lower() in query.lower():
-            return val
-    return f'关于"{query}"的搜索结果：该话题在技术社区有广泛讨论。建议查阅官方文档获取最准确的信息。'
+    try:
+        data = await client.search(query)
+        return format_search_response(data)
+    except httpx.TimeoutException:
+        logger.warn('tool:search timeout', {'query': query})
+        return f'搜索「{query}」超时，请稍后重试。'
+    except httpx.HTTPStatusError as e:
+        logger.warn('tool:search http error', {'query': query, 'status': e.response.status_code})
+        return f'搜索服务暂时不可用（HTTP {e.response.status_code}），请稍后重试。'
+    except Exception as e:
+        logger.warn('tool:search failed', {'query': query, 'error': str(e)})
+        return f'搜索「{query}」失败：{e}'
 
 
 # ── 工具2：读取知识库文档 ────────────────────────────────────

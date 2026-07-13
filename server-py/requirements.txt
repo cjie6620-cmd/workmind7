@@ -9,7 +9,9 @@ langchain-community>=0.3.0
 langchain-openai>=0.3.0
 langchain-huggingface>=0.1.0
 sentence-transformers>=2.6.0
-torch>=2.1.0
+# Windows 上 torch 2.13 可能 DLL 加载失败，固定 2.5.1；安装后若 import torch 失败，执行：
+# uv pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+torch==2.5.1
 langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
 # RAG 混合检索

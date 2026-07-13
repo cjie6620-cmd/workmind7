@@ -66,6 +66,11 @@ config = {
         'timeout': int(_env('MINERU_TIMEOUT', '120')),
         'model_version': _env('MINERU_MODEL_VERSION', 'vlm'),
     },
+    'tavily': {
+        'api_key': _env('TAVILY_API_KEY'),
+        'timeout': int(_env('TAVILY_TIMEOUT', '30')),
+        'max_results': int(_env('TAVILY_MAX_RESULTS', '5')),
+    },
     'cache': {
         'ttl': int(_env('CACHE_TTL', '1800000')),  # 毫秒，默认 30 分钟
     },

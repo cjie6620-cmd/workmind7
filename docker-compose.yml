@@ -1,0 +1,47 @@
+# workmind7 独立中间件（与 culture-agent / rag-eval 端口隔离）
+# 启动：docker compose up -d
+# 停服：docker compose down
+# 初始化表：cd server-py && python -m scripts.init_db
+name: workmind7
+
+services:
+  # PostgreSQL 16 + pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: workmind7-pgvector
+    ports:
+      - "${WM_PG_PORT:-5434}:5432"
+    environment:
+      POSTGRES_USER: ${WM_PG_USER:-workmind}
+      POSTGRES_PASSWORD: ${WM_PG_PASSWORD:-workmind_dev}
+      POSTGRES_DB: ${WM_PG_DB:-workmind_vector}
+    volumes:
+      - wm_pg_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WM_PG_USER:-workmind} -d ${WM_PG_DB:-workmind_vector}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis 7（LangGraph checkpointer / 缓存）
+  redis:
+    image: redis:7-alpine
+    container_name: workmind7-redis
+    ports:
+      - "${WM_REDIS_PORT:-6381}:6379"
+    volumes:
+      - wm_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  wm_pg_data:
+    driver: local
+  wm_redis_data:
+    driver: local

@@ -15,7 +15,15 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import async_engine, async_session_factory
-from app.models.entities import Base, RagChunk, Conversation, ApprovalRecord, AgentConfig
+from app.models.entities import (
+    Base,
+    Document,
+    RagChunk,
+    Conversation,
+    ApprovalRecord,
+    AgentConfig,
+    MonitorRecord,
+)
 
 
 async def init_database():
@@ -34,10 +42,12 @@ async def init_database():
 
     print('[OK] 数据库初始化完成！')
     print('\n创建的表：')
+    print('  - documents         (知识库文档元信息)')
     print('  - rag_chunks        (RAG 知识库切片)')
     print('  - conversations     (对话历史)')
     print('  - approval_records  (审批记录)')
-    print('  - agent_configs    (Agent/工作流配置)')
+    print('  - agent_configs     (Agent/工作流配置)')
+    print('  - monitor_records   (用量监控记录)')
 
 
 async def check_connection():

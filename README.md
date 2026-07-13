@@ -259,8 +259,8 @@ EMBEDDING_MODEL=/path/to/bge-m3
 ```bash
 cd server-py
 
-# 创建虚拟环境
-uv venv
+# 创建虚拟环境（推荐 Python 3.12，避免 3.14 下部分包需本地编译）
+uv venv --python 3.12
 
 # 激活虚拟环境
 # Windows PowerShell:
