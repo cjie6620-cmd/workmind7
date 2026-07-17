@@ -1,0 +1,3 @@
+*.sh text eol=lf
+server-py/docker-entrypoint.sh text eol=lf
+scripts/*.sh text eol=lf

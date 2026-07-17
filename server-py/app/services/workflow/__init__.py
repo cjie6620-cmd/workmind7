@@ -9,4 +9,4 @@ Workflow 工作流模块
 
 from .workflows import WORKFLOW_BUILDERS, WORKFLOW_META
 
-__all__ = ['WORKFLOW_BUILDERS', 'WORKFLOW_META']
+__all__ = ["WORKFLOW_BUILDERS", "WORKFLOW_META"]

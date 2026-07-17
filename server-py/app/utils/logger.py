@@ -18,16 +18,16 @@ import sys
 from datetime import datetime, timezone
 
 # 是否为生产环境
-is_prod = os.environ.get('NODE_ENV', '') == 'production'
+is_prod = os.environ.get("NODE_ENV", "") == "production"
 
 # ANSI 颜色码
 COLORS = {
-    'info': '\033[36m',    # 青色
-    'warn': '\033[33m',    # 黄色
-    'error': '\033[31m',   # 红色
-    'debug': '\033[90m',   # 灰色
+    "info": "\033[36m",  # 青色
+    "warn": "\033[33m",  # 黄色
+    "error": "\033[31m",  # 红色
+    "debug": "\033[90m",  # 灰色
 }
-RESET = '\033[0m'          # 重置颜色
+RESET = "\033[0m"  # 重置颜色
 
 
 def _log(level, msg, ctx=None):
@@ -47,22 +47,22 @@ def _log(level, msg, ctx=None):
     """
     ctx = ctx or {}
     entry = {
-        'time': datetime.now(timezone.utc).isoformat(),
-        'level': level,
-        'msg': msg,
+        "time": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "msg": msg,
         **ctx,
     }
 
     if is_prod:
         # 生产环境：JSON 输出，便于日志收集和分析
-        sys.stdout.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        sys.stdout.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return
 
     # 开发环境：彩色控制台输出
-    c = COLORS.get(level, '')
-    time_str = entry['time'][11:19]  # 只取 HH:MM:SS
-    ctx_str = ' ' + json.dumps(ctx, ensure_ascii=False) if ctx else ''
-    print(f'{c}[{time_str}] {level.upper()} {msg}{ctx_str}{RESET}')
+    c = COLORS.get(level, "")
+    time_str = entry["time"][11:19]  # 只取 HH:MM:SS
+    ctx_str = " " + json.dumps(ctx, ensure_ascii=False) if ctx else ""
+    print(f"{c}[{time_str}] {level.upper()} {msg}{ctx_str}{RESET}")
 
 
 class logger:
@@ -80,20 +80,25 @@ class logger:
     @staticmethod
     def info(msg, ctx=None):
         """信息日志"""
-        _log('info', msg, ctx)
+        _log("info", msg, ctx)
 
     @staticmethod
     def warn(msg, ctx=None):
         """警告日志"""
-        _log('warn', msg, ctx)
+        _log("warn", msg, ctx)
+
+    @staticmethod
+    def warning(msg, ctx=None):
+        """兼容标准 logging 命名，避免告警路径因方法缺失反向失败。"""
+        _log("warn", msg, ctx)
 
     @staticmethod
     def error(msg, ctx=None):
         """错误日志"""
-        _log('error', msg, ctx)
+        _log("error", msg, ctx)
 
     @staticmethod
     def debug(msg, ctx=None):
         """调试日志（生产环境不输出）"""
         if not is_prod:
-            _log('debug', msg, ctx)
+            _log("debug", msg, ctx)

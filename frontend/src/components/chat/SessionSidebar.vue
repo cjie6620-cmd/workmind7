@@ -4,7 +4,7 @@
   <div class="session-sidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">对话记录</span>
-      <button class="btn-new" @click="chatStore.newSession()" title="新建对话">
+      <button class="btn-new" :disabled="chatStore.creatingSession" @click="createSession" title="新建对话">
         <span>＋</span>
       </button>
     </div>
@@ -20,7 +20,7 @@
         <el-icon class="session-icon"><ChatDotRound /></el-icon>
         <div class="session-info">
           <div class="session-title">{{ session.title }}</div>
-          <div class="session-meta">{{ session.messages.length }} 条消息</div>
+          <div class="session-meta">{{ session.messages.length || session.messageCount || 0 }} 条消息</div>
         </div>
         <!-- 删除按钮（hover 显示） -->
         <button
@@ -44,12 +44,16 @@ import { useAppStore } from '@/stores/app.js'
 const chatStore = useChatStore()
 const appStore  = useAppStore()
 
-function deleteSession(id) {
+async function createSession() {
+  await chatStore.newSession()
+}
+
+async function deleteSession(id) {
   if (chatStore.sessions.length <= 1) {
     appStore.toast.warning('至少保留一个会话')
     return
   }
-  chatStore.deleteSession(id)
+  await chatStore.deleteSession(id)
 }
 </script>
 
@@ -92,6 +96,7 @@ function deleteSession(id) {
   transition: all var(--transition);
 }
 .btn-new:hover { background: var(--color-primary); color: #fff; }
+.btn-new:disabled { opacity: .5; cursor: wait; }
 
 .session-list {
   flex: 1;

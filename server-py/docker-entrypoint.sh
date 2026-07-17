@@ -17,5 +17,15 @@ until alembic upgrade head; do
   sleep 2
 done
 
-echo "[entrypoint] Migrations complete. Starting uvicorn on port ${PORT}..."
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --workers 1
+# T2：多 worker 拓扑由 UVICORN_WORKERS 控制（验收默认 ≥2；单实例调试可设 1）
+WORKERS="${UVICORN_WORKERS:-2}"
+TIMEOUT="${UVICORN_TIMEOUT:-120}"
+GRACEFUL="${UVICORN_GRACEFUL_TIMEOUT:-30}"
+
+echo "[entrypoint] Migrations complete. Starting uvicorn on port ${PORT} (workers=${WORKERS})..."
+exec uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port "${PORT}" \
+  --workers "${WORKERS}" \
+  --timeout-keep-alive "${TIMEOUT}" \
+  --timeout-graceful-shutdown "${GRACEFUL}"

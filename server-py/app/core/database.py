@@ -6,6 +6,7 @@ PostgreSQL 数据库连接模块
 
 import os
 from contextlib import asynccontextmanager
+from importlib import import_module
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -17,21 +18,34 @@ from ..config import config as app_config
 
 class Base(DeclarativeBase):
     """SQLAlchemy ORM 基类"""
+
     pass
 
 
+def _register_models() -> None:
+    """导入实体模块，使所有 ORM 表注册到 ``Base.metadata``。"""
+    import_module("..models.entities", package=__package__)
+
+
 # 从配置读取数据库 URL（唯一来源，无 fallback）
-_db_config = app_config.get('database', {})
-DB_URL = _db_config.get('url')
+_db_config = app_config.get("database", {})
+DB_URL = _db_config.get("url")
 if not DB_URL:
-    raise RuntimeError('DATABASE_URL 未配置，请在 .env 中设置')
+    raise RuntimeError("DATABASE_URL 未配置，请在 .env 中设置")
 
 # 异步引擎（推荐用于 FastAPI）
+# 测试环境使用 NullPool，避免 asyncpg 连接复用导致 "another operation is in progress"
+_engine_kwargs: dict = {
+    "pool_size": _db_config.get("pool_size", 10),
+    "max_overflow": _db_config.get("max_overflow", 20),
+    "echo": False,
+}
+if os.environ.get("TESTING") == "1":
+    _engine_kwargs = {"poolclass": NullPool, "echo": False}
+
 async_engine = create_async_engine(
     DB_URL,
-    pool_size=_db_config.get('pool_size', 10),
-    max_overflow=_db_config.get('max_overflow', 20),
-    echo=False,  # 生产环境改为 True 查看 SQL
+    **_engine_kwargs,
 )
 
 # 异步 Session Factory
@@ -86,10 +100,7 @@ async def init_db():
 
     开发专用；生产环境请使用 alembic upgrade head
     """
-    from ..models.entities import (
-        RagChunk, Conversation, ApprovalRecord, AgentConfig,
-        Document, MonitorRecord, User, SystemSetting,
-    )
+    _register_models()
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -102,25 +113,26 @@ async def check_tables_status() -> dict:
 
     try:
         async with async_engine.connect() as conn:
+
             def _check(sync_conn):
                 inspector = sa_inspect(sync_conn)
                 return set(inspector.get_table_names())
 
             existing = await conn.run_sync(_check)
     except Exception as e:
-        return {'status': 'unreachable', 'message': f'数据库连接失败: {e}'}
+        return {"status": "unreachable", "message": f"数据库连接失败: {e}"}
 
-    from ..models.entities import RagChunk, Conversation, ApprovalRecord, AgentConfig, Document, MonitorRecord, User, SystemSetting
+    _register_models()
     required = set(Base.metadata.tables.keys())
     missing = required - existing
 
     if not missing:
-        return {'status': 'ready', 'message': '所有表已就绪'}
+        return {"status": "ready", "message": "所有表已就绪"}
 
     return {
-        'status': 'missing_tables',
-        'message': f'缺少 {len(missing)} 张表，请运行 alembic upgrade head',
-        'missing_tables': sorted(missing),
+        "status": "missing_tables",
+        "message": f"缺少 {len(missing)} 张表，请运行 alembic upgrade head",
+        "missing_tables": sorted(missing),
     }
 
 

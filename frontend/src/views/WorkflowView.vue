@@ -39,7 +39,7 @@
 
       <template v-else>
         <!-- 输入阶段 -->
-        <div v-if="!wfStore.running && !wfStore.paused && !wfStore.result" class="input-phase">
+        <div v-if="currentMeta && !wfStore.running && !wfStore.paused && !wfStore.result" class="input-phase">
           <div class="phase-title">
             <!-- <span class="phase-icon">{{ currentMeta.icon }}</span> -->
             {{ currentMeta.title }}
@@ -59,6 +59,12 @@
           <button class="btn btn-primary start-btn" @click="startWorkflow" :disabled="!mainInput.trim()">
             ▶ 开始执行
           </button>
+        </div>
+
+        <div v-if="!currentMeta && !wfStore.running && !wfStore.paused && !wfStore.result" class="empty-state">
+          <div class="empty-title">该工作流版本已不可用</div>
+          <div class="empty-desc">请选择当前仍启用的工作流模板重新开始。</div>
+          <button class="btn btn-primary" @click="wfStore.reset()">返回模板列表</button>
         </div>
 
         <!-- 执行中 -->
@@ -98,7 +104,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow.js'
 import { useAppStore } from '@/stores/app.js'
 import WorkflowGraph from '@/components/workflow/WorkflowGraph.vue'
@@ -114,11 +120,11 @@ const extraValue = ref('')
 function renderMd(t) { return renderMarkdown(t) }
 
 const currentMeta = computed(() =>
-  wfStore.templates.find(t => t.id === wfStore.selectedTemplate) || null
+  wfStore.getTemplateMeta(wfStore.selectedTemplate)
 )
 
-function selectAndReset(id) {
-  wfStore.selectTemplate(id)
+async function selectAndReset(id) {
+  if (!await wfStore.selectTemplate(id)) return
   mainInput.value = ''
   extraValue.value = ''
 }
@@ -128,7 +134,7 @@ async function startWorkflow() {
 
   const fieldMaps = {
     weekly_report:   { mainKey: 'points',      extraKey: 'dept' },
-    meeting_minutes: { mainKey: 'rawNotes',    extraKey: 'meetingTitle' },
+    meeting_minutes: { mainKey: 'raw_notes',   extraKey: 'meeting_title' },
     email_polish:    { mainKey: 'draft',       extraKey: 'recipient' },
     prd_skeleton:    { mainKey: 'description', extraKey: null },
   }
@@ -144,8 +150,8 @@ async function resumeWithFeedback(feedback) {
   await wfStore.resumeWorkflow(feedback)
 }
 
-function handleAbort() {
-  wfStore.reset()
+async function handleAbort() {
+  if (!await wfStore.cancelWorkflow()) return
   mainInput.value = ''
   extraValue.value = ''
 }
@@ -156,10 +162,15 @@ async function copyResult() {
 }
 
 function restart() {
-  wfStore.reset()
+  wfStore.restartWorkflow()
 }
 
-onMounted(() => wfStore.loadTemplates())
+onMounted(async () => {
+  await wfStore.loadTemplates()
+  await wfStore.restorePendingRun()
+})
+
+onUnmounted(() => wfStore.stopStream())
 </script>
 
 <style scoped>

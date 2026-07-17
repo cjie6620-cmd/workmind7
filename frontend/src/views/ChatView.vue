@@ -56,7 +56,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '@/stores/chat.js'
 import SessionSidebar from '@/components/chat/SessionSidebar.vue'
 import RoleSelector from '@/components/chat/RoleSelector.vue'
@@ -115,11 +115,15 @@ watch(
   }
 )
 
-onMounted(() => {
-  chatStore.init()
-  chatStore.loadRoles()
-  chatStore.loadProfile()
+onMounted(async () => {
+  await Promise.all([
+    chatStore.init(),
+    chatStore.loadRoles(),
+    chatStore.loadProfile(),
+  ])
 })
+
+onUnmounted(() => chatStore.stopGenerate())
 </script>
 
 <style scoped>

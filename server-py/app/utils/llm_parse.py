@@ -17,9 +17,9 @@ def _format_validation_error(err: ValidationError) -> str:
     """将 Pydantic ValidationError 格式化为简洁描述，用于反馈给 LLM"""
     lines = []
     for e in err.errors():
-        loc = '.'.join(str(x) for x in e['loc'])
-        lines.append(f'- {loc}: {e["msg"]}')
-    return '\n'.join(lines)
+        loc = ".".join(str(x) for x in e["loc"])
+        lines.append(f"- {loc}: {e['msg']}")
+    return "\n".join(lines)
 
 
 async def parse_with_retry(model, messages, model_cls, max_retries=2):
@@ -45,9 +45,9 @@ async def parse_with_retry(model, messages, model_cls, max_retries=2):
             data = JsonRepair.repair(raw)
         except ValueError as e:
             if attempt < max_retries:
-                messages.append({'role': 'assistant', 'content': raw})
-                messages.append({'role': 'user', 'content': f'JSON 提取失败：{e}。请重新输出完整的有效 JSON。'})
-                logger.warning(f'llm_parse: json repair failed, retry {attempt + 1}')
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content": f"JSON 提取失败：{e}。请重新输出完整的有效 JSON。"})
+                logger.warning(f"llm_parse: json repair failed, retry {attempt + 1}")
                 continue
             raise
 
@@ -56,8 +56,8 @@ async def parse_with_retry(model, messages, model_cls, max_retries=2):
         except ValidationError as e:
             if attempt < max_retries:
                 error_detail = _format_validation_error(e)
-                messages.append({'role': 'assistant', 'content': raw})
-                messages.append({'role': 'user', 'content': f'JSON 结构验证失败：\n{error_detail}\n请修正后重新输出。'})
-                logger.warning(f'llm_parse: pydantic validation failed, retry {attempt + 1}')
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content": f"JSON 结构验证失败：\n{error_detail}\n请修正后重新输出。"})
+                logger.warning(f"llm_parse: pydantic validation failed, retry {attempt + 1}")
                 continue
             raise

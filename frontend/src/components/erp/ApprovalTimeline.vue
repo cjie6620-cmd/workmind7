@@ -5,7 +5,7 @@
 
     <!-- 审批人步骤列表（左侧，固定） -->
     <div class="steps-panel">
-      <div class="steps-title">审批流程</div>
+      <div class="steps-title">模拟审批流程</div>
 
       <!-- 审批等待中 loading -->
       <div v-if="erpStore.approving && !erpStore.approvalSteps.length" class="steps-loading">
@@ -41,7 +41,7 @@
       <!-- 最终结果 -->
       <div v-if="erpStore.finalResult" class="final-result" :class="erpStore.finalResult.status">
         <div class="final-text">
-          {{ erpStore.finalResult.approved ? '审批通过' : '审批驳回' }}
+          {{ erpStore.finalResult.approved ? '模拟通过' : '模拟未通过' }}
         </div>
       </div>
     </div>
@@ -50,7 +50,7 @@
     <div class="conversation" ref="convEl">
       <!-- 空状态 -->
       <div v-if="!erpStore.approvalMessages.length && !erpStore.approving" class="conv-empty">
-        <div>审批开始后，各角色的对话将在此显示</div>
+        <div>预演开始后，各模拟角色的对话将在此显示</div>
       </div>
 
       <!-- 执行中占位 -->

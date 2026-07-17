@@ -10,30 +10,35 @@
 
       <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleLogin">
         <el-form-item prop="username">
-          <el-input
-            v-model="form.username"
-            placeholder="用户名"
-            size="large"
-            prefix-icon="User"
-            autocomplete="username"
-          />
+          <div data-testid="login-username">
+            <el-input
+              v-model="form.username"
+              placeholder="用户名"
+              size="large"
+              prefix-icon="User"
+              autocomplete="username"
+            />
+          </div>
         </el-form-item>
         <el-form-item prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            placeholder="密码"
-            size="large"
-            prefix-icon="Lock"
-            show-password
-            autocomplete="current-password"
-            @keyup.enter="handleLogin"
-          />
+          <div data-testid="login-password">
+            <el-input
+              v-model="form.password"
+              type="password"
+              placeholder="密码"
+              size="large"
+              prefix-icon="Lock"
+              show-password
+              autocomplete="current-password"
+              @keyup.enter="handleLogin"
+            />
+          </div>
         </el-form-item>
         <el-button
           type="primary"
           size="large"
           class="login-btn"
+          data-testid="login-submit"
           :loading="loading"
           @click="handleLogin"
         >

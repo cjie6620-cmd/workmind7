@@ -6,4 +6,4 @@
 
 from .entities import RagChunk, Conversation, ApprovalRecord, AgentConfig
 
-__all__ = ['RagChunk', 'Conversation', 'ApprovalRecord', 'AgentConfig']
+__all__ = ["RagChunk", "Conversation", "ApprovalRecord", "AgentConfig"]

@@ -66,7 +66,7 @@
               >
                 <span class="source-num">[{{ i + 1 }}]</span>
                 <span class="source-title">{{ src.title }}</span>
-                <span class="source-score">{{ (src.score * 100).toFixed(0) }}%</span>
+                <span v-if="src.score != null" class="source-score">{{ formatScore(src.score) }}</span>
                 <!-- 展开显示片段内容 -->
                 <button
                   class="source-expand"
@@ -104,8 +104,7 @@
           v-model="question"
           @focus="focused = true"
           @blur="focused = false"
-          @keydown.enter.prevent="handleEnter"
-          @keydown.shift.enter="null"
+          @keydown.enter="handleEnter"
           placeholder="向知识库提问... (Enter 发送，Shift+Enter 换行)"
           :disabled="knStore.querying"
           rows="1"
@@ -146,7 +145,14 @@ const exampleQuestions = [
 
 function handleEnter(e) {
   if (e.shiftKey) return   // Shift+Enter 换行
+  e.preventDefault()
   send()
+}
+
+function formatScore(score) {
+  const normalized = Number(score)
+  if (!Number.isFinite(normalized)) return '—'
+  return `${Math.round(Math.max(0, Math.min(1, normalized)) * 100)}%`
 }
 
 async function send() {

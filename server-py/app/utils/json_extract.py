@@ -57,7 +57,7 @@ def extract_json(text: str):
         logger.debug("步骤1 直接解析失败，尝试步骤2 提取代码块")
 
     # 步骤 2: 提取代码块
-    code_block = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
+    code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
     if code_block:
         inner = code_block.group(1).strip()
         try:
@@ -70,11 +70,11 @@ def extract_json(text: str):
 
     # 步骤 3: 提取最外层 { ... }
     json_start = None
-    idx = text.find('{')
+    idx = text.find("{")
     if idx != -1:
-        ridx = text.rfind('}')
+        ridx = text.rfind("}")
         if ridx > idx:
-            candidate = text[idx:ridx + 1]
+            candidate = text[idx : ridx + 1]
             try:
                 result = json.loads(candidate)
                 logger.debug("JSON 解析成功：步骤3 花括号截取")
@@ -85,7 +85,7 @@ def extract_json(text: str):
 
     # 步骤 4: 清洗尾部逗号
     if json_start:
-        cleaned = re.sub(r',\s*}', '}', json_start)
+        cleaned = re.sub(r",\s*}", "}", json_start)
         try:
             result = json.loads(cleaned)
             logger.debug("JSON 解析成功：步骤4 清洗尾逗号")
@@ -103,4 +103,4 @@ def extract_json(text: str):
         except json.JSONDecodeError:
             logger.debug("步骤5 单引号替换失败，所有步骤均无法解析")
 
-    raise ValueError(f'无法从输出中提取有效 JSON: {text[:200]}')
+    raise ValueError(f"无法从输出中提取有效 JSON: {text[:200]}")

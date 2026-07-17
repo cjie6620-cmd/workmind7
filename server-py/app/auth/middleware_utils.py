@@ -10,27 +10,27 @@ from .users import get_dev_bypass_user
 
 
 def is_auth_enabled() -> bool:
-    return bool(config['auth']['enabled'])
+    return bool(config["auth"]["enabled"])
 
 
 def is_public_api_path(path: str, method: str) -> bool:
     """无需 Bearer token 的 API 路径"""
-    if method == 'OPTIONS':
+    if method == "OPTIONS":
         return True
-    if path.startswith('/health'):
+    if path.startswith("/health"):
         return True
-    if path == '/api/auth/login':
+    if path == "/api/auth/login":
         return True
-    if path == '/api/auth/refresh':
+    if path == "/api/auth/refresh":
         return True
     return False
 
 
 def extract_bearer_token(scope: Scope) -> str | None:
     """从 ASGI scope 提取 Bearer token"""
-    raw_headers = dict(scope.get('headers', []))
-    auth_header = raw_headers.get(b'authorization', b'').decode()
-    if not auth_header.lower().startswith('bearer '):
+    raw_headers = dict(scope.get("headers", []))
+    auth_header = raw_headers.get(b"authorization", b"").decode()
+    if not auth_header.lower().startswith("bearer "):
         return None
     token = auth_header[7:].strip()
     return token or None

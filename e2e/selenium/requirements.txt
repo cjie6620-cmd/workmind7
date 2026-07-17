@@ -1,0 +1,5 @@
+# Selenium E2E dependencies (Python 3.12+)
+selenium>=4.25.0
+pytest>=8.0.0
+pytest-timeout>=2.3.0
+webdriver-manager>=4.0.2

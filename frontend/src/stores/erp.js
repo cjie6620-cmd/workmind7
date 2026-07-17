@@ -1,7 +1,7 @@
 // frontend/src/stores/erp.js
 // ERP 模块状态：表单解析、审批流、申请记录
 import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
+import { ref } from 'vue'
 import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
 import { useAppStore } from './app.js'
@@ -28,6 +28,9 @@ export const useErpStore = defineStore('erp', () => {
   const finalResult = ref(null)
   // 当前申请编号
   const currentAppId = ref('')
+  const approvalRequestId = ref('')
+  let abortController = null
+  let stateVersion = 0
 
   // ── 申请列表 ──────────────────────────────────────────────
   const applications = ref([])
@@ -38,18 +41,22 @@ export const useErpStore = defineStore('erp', () => {
 
     parsing.value = true
     parsedForm.value = null
+    approvalRequestId.value = ''
+    const version = stateVersion
 
     try {
       const data = await http.post('/erp/parse', {
         text,
         formType: formType.value,
       })
+      if (version !== stateVersion) return
       parsedForm.value = data.form
       return data.form
-    } catch (err) {
+    } catch {
+      if (version !== stateVersion) return
       appStore.toast.error('解析失败，请重新描述')
     } finally {
-      parsing.value = false
+      if (version === stateVersion) parsing.value = false
     }
   }
 
@@ -61,6 +68,10 @@ export const useErpStore = defineStore('erp', () => {
     approvalMessages.value = []
     approvalSteps.value    = []
     finalResult.value      = null
+    if (!approvalRequestId.value) approvalRequestId.value = createRequestId()
+    const controller = new AbortController()
+    const version = stateVersion
+    abortController = controller
 
     await fetchStream(
       '/api/erp/submit/stream',
@@ -68,9 +79,12 @@ export const useErpStore = defineStore('erp', () => {
         formData:      parsedForm.value,
         formType:      formType.value,
         applicantName,
+        requestId:     approvalRequestId.value,
       },
       {
+        signal: controller.signal,
         onEvent: (event, data) => {
+          if (version !== stateVersion) return
           if (event === 'start') {
             currentAppId.value = data.appId
           }
@@ -116,39 +130,78 @@ export const useErpStore = defineStore('erp', () => {
             loadApplications()
           }
 
-          if (event === 'done') {
-            approving.value = false
-          }
+        },
+        onDone: () => {
+          if (version !== stateVersion) return
+          approving.value = false
         },
         onError: (err) => {
+          if (version !== stateVersion) return
           approving.value = false
           appStore.toast.error(err.message || '审批流程出错')
         },
       }
     )
+
+    if (abortController === controller) {
+      abortController = null
+      approving.value = false
+    }
   }
 
   // ── 申请记录 ──────────────────────────────────────────────
   async function loadApplications() {
+    const version = stateVersion
     try {
       const data = await http.get('/erp/applications')
+      if (version !== stateVersion) return
       applications.value = data.applications
-    } catch {}
+    } catch (err) {
+      console.warn('加载审批记录失败', err.message)
+    }
   }
 
   // 重置（开始新申请）
   function reset() {
+    stopApproval()
     parsedForm.value       = null
     approvalMessages.value = []
     approvalSteps.value    = []
     finalResult.value      = null
     currentAppId.value     = ''
+    approvalRequestId.value = ''
+  }
+
+  function detachApproval() {
+    // 离开页面时仅断开 UI 推送，不 abort 已受理的服务端预审任务
+    abortController = null
+    approving.value = false
+  }
+
+  function stopApproval() {
+    abortController?.abort()
+    abortController = null
+    approving.value = false
+  }
+
+  function resetSession() {
+    stateVersion += 1
+    reset()
+    applications.value = []
+    parsing.value = false
   }
 
   return {
     formType, parsedForm, parsing,
     approvalMessages, approvalSteps, approving, finalResult, currentAppId,
+    approvalRequestId,
     applications,
     parseForm, submitApproval, loadApplications, reset,
+    stopApproval, detachApproval, resetSession,
   }
 })
+
+function createRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `erp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+}

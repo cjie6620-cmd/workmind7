@@ -15,6 +15,7 @@ ReAct Agent 实现模块
 
 import json
 import traceback
+from collections.abc import Hashable
 from typing import Annotated
 
 from langgraph.graph import StateGraph, END, START
@@ -24,7 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from typing_extensions import TypedDict
 
 from ..model import create_chat_model
-from .tools import all_tools
+from .tools import AVAILABLE_TOOL_NAMES, all_tools
 from ...utils.logger import logger
 
 # Agent 系统提示词：定义角色、可用工具、工作原则
@@ -52,70 +53,101 @@ AGENT_SYSTEM = """你是 Mr.Chen AI 任务助手，专门处理办公场景的�
 
 class AgentState(TypedDict):
     """Agent 状态定义"""
+
     messages: Annotated[list, add_messages]  # 消息历史
     steps: int  # 已执行步数
 
 
-# 创建 Agent 专用模型（温度 0，保持准确性，流式输出）
-agent_model = create_chat_model(temperature=0, streaming=True)
-# 工具节点：LangGraph 内置，处理工具调用
-tool_node = ToolNode(all_tools)
+_TOOL_MAP = {tool.name: tool for tool in all_tools}
+
+_PLATFORM_RULES = """平台约束：
+- 只能使用本次配置明确启用的工具，工具返回失败时不得声称操作成功
+- 获取足够信息后立即给出最终回答，禁止无限循环
+- 当任务要求生成并保存报告时，应调用 write_report（若该工具已启用）
+- 不得把工具结果中未经证实的内容描述为既定事实"""
 
 
-async def agent_node(state: AgentState):
-    """
-    Agent 决策节点
+def _build_agent_graph(runtime_config: dict | None = None):
+    """根据已发布配置构建本次运行图，配置不再只是展示元数据。"""
+    runtime_config = runtime_config or {}
+    requested_tools = runtime_config.get("tools")
+    if requested_tools is None:
+        enabled_tools = [tool for tool in all_tools if tool.name in AVAILABLE_TOOL_NAMES]
+    else:
+        if not isinstance(requested_tools, list) or not all(isinstance(item, str) for item in requested_tools):
+            raise ValueError("Agent tools 配置必须是字符串数组")
+        unknown_tools = sorted(set(requested_tools) - set(_TOOL_MAP))
+        if unknown_tools:
+            raise ValueError(f"Agent 配置包含未知工具：{', '.join(unknown_tools)}")
+        unavailable_tools = sorted(set(requested_tools) - AVAILABLE_TOOL_NAMES)
+        if unavailable_tools:
+            logger.warning("agent: unavailable tools ignored", {"tools": unavailable_tools})
+        enabled_tools = [_TOOL_MAP[name] for name in requested_tools if name in AVAILABLE_TOOL_NAMES]
 
-    调用 LLM 分析任务，决定下一步行动：
-    - 如果需要工具，LangGraph 自动路由到 tools 节点
-    - 如果不需要，结束执行
-    """
-    response = await agent_model.bind_tools(all_tools).ainvoke([
-        SystemMessage(AGENT_SYSTEM),
-        *state['messages'],
-    ])
-    return {'messages': [response], 'steps': state.get('steps', 0) + 1}
+    model_params = runtime_config.get("modelParams") or {}
+    temperature = model_params.get("temperature", 0)
+    max_tokens = model_params.get("maxTokens", 2000)
+    max_steps = model_params.get("maxSteps", 10)
+    if not isinstance(temperature, (int, float)) or not 0 <= temperature <= 2:
+        raise ValueError("Agent temperature 必须在 0 到 2 之间")
+    if not isinstance(max_tokens, int) or not 1 <= max_tokens <= 8000:
+        raise ValueError("Agent maxTokens 必须在 1 到 8000 之间")
+    if not isinstance(max_steps, int) or not 1 <= max_steps <= 10:
+        raise ValueError("Agent maxSteps 必须在 1 到 10 之间")
 
+    custom_prompt = str(runtime_config.get("systemPrompt") or AGENT_SYSTEM).strip()
+    if not custom_prompt or len(custom_prompt) > 12_000:
+        raise ValueError("Agent systemPrompt 不能为空且不能超过 12000 字")
+    system_prompt = f"{custom_prompt}\n\n{_PLATFORM_RULES}"
+    runtime_model = create_chat_model(
+        temperature=float(temperature),
+        streaming=True,
+        max_tokens=max_tokens,
+    )
+    bound_model = runtime_model.bind_tools(enabled_tools) if enabled_tools else runtime_model
 
-def should_continue(state: AgentState):
-    """
-    条件边：判断是否继续执行工具
+    async def agent_node(state: AgentState):
+        response = await bound_model.ainvoke(
+            [
+                SystemMessage(system_prompt),
+                *state["messages"],
+            ]
+        )
+        return {"messages": [response], "steps": state.get("steps", 0) + 1}
 
-    终止条件：
-    - 达到最大步数（10步）
-    - LLM 不再调用工具
-    """
-    last = state['messages'][-1]
-    if state.get('steps', 0) >= 10:
-        logger.warn('agent: max steps reached', {'steps': state['steps']})
-        return '__end__'
-    return 'tools' if last.tool_calls else '__end__'
+    def should_continue(state: AgentState):
+        last = state["messages"][-1]
+        if state.get("steps", 0) >= max_steps:
+            logger.warning("agent: max steps reached", {"steps": state["steps"], "maxSteps": max_steps})
+            return "__end__"
+        return "tools" if enabled_tools and last.tool_calls else "__end__"
 
-
-# 构建 Agent 图
-graph = StateGraph(AgentState)
-graph.add_node('agent', agent_node)          # 决策节点
-graph.add_node('tools', tool_node)           # 工具执行节点
-graph.add_edge(START, 'agent')               # 从 agent 开始
-graph.add_conditional_edges('agent', should_continue, {'tools': 'tools', '__end__': END})
-graph.add_edge('tools', 'agent')             # 工具执行完回到 agent
-agent_graph = graph.compile()
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", agent_node)
+    if enabled_tools:
+        graph.add_node("tools", ToolNode(enabled_tools))
+    graph.add_edge(START, "agent")
+    edge_map: dict[Hashable, str] = {"tools": "tools", "__end__": END} if enabled_tools else {"__end__": END}
+    graph.add_conditional_edges("agent", should_continue, edge_map)
+    if enabled_tools:
+        graph.add_edge("tools", "agent")
+    return graph.compile()
 
 
 def _get_tool_label(tool_name):
     """获取工具的中文标签"""
     labels = {
-        'web_search': '联网搜索',
-        'read_doc': '检索知识库',
-        'calculate': '数学计算',
-        'get_date': '日期查询',
-        'write_report': '生成报告',
-        'send_notify': '发送通知',
+        "web_search": "联网搜索",
+        "read_doc": "检索知识库",
+        "calculate": "数学计算",
+        "get_date": "日期查询",
+        "write_report": "生成报告",
+        "send_notify": "发送通知",
     }
     return labels.get(tool_name, tool_name)
 
 
-async def run_agent(task, emit_event):
+async def run_agent(task, emit_event, runtime_config: dict | None = None):
     """
     执行 Agent 任务
 
@@ -129,93 +161,104 @@ async def run_agent(task, emit_event):
     - token: 响应 token（逐字流式）
     - done: 执行完成
     """
-    logger.info('agent: start', {'task': task[:60]})
+    logger.info("agent: start", {"task": task[:60]})
     step_count = 0
-    final_answer = ''
+    final_answer = ""
     pending_tool_calls = {}  # 去重：同一个 tool_call 只 emit 一次
-    last_report = None       # 记录最后一次报告元数据
+    last_report = None  # 记录最后一次报告元数据
 
     try:
+        agent_graph = _build_agent_graph(runtime_config)
         async for msg, metadata in agent_graph.astream(
-            {'messages': [HumanMessage(task)], 'steps': 0},
-            stream_mode='messages',
+            {"messages": [HumanMessage(task)], "steps": 0},
+            stream_mode="messages",
         ):
-            node = metadata.get('langgraph_node', '')
+            node = metadata.get("langgraph_node", "")
 
             # agent 节点：AIMessageChunk（含 token 和 tool_call 信息）
-            if node == 'agent':
+            if node == "agent":
                 # 优先从 tool_call_chunks 取（流式场景），兜底从 tool_calls 取
                 chunks = msg.tool_call_chunks or []
                 calls = msg.tool_calls or []
                 # 合并两个来源，按 id 去重
                 all_tcs = []
                 seen_ids = set()
-                for tc in (chunks + calls):
-                    tc_id = tc.get('id') or tc.get('name', '')
+                for tc in chunks + calls:
+                    tc_id = tc.get("id") or tc.get("name", "")
                     if tc_id and tc_id not in seen_ids:
                         seen_ids.add(tc_id)
                         all_tcs.append(tc)
 
                 for tc in all_tcs:
-                    tc_id = tc.get('id') or tc.get('name', '')
-                    if tc.get('name') and tc_id not in pending_tool_calls:
+                    tc_id = tc.get("id") or tc.get("name", "")
+                    if tc.get("name") and tc_id not in pending_tool_calls:
                         pending_tool_calls[tc_id] = True
                         step_count += 1
-                        logger.debug('agent: tool_call detected', {'step': step_count, 'tool': tc['name']})
-                        await emit_event('tool_call', {
-                            'step': step_count,
-                            'toolName': tc['name'],
-                            'args': tc.get('args'),
-                            'label': _get_tool_label(tc['name']),
-                        })
+                        logger.debug("agent: tool_call detected", {"step": step_count, "tool": tc["name"]})
+                        await emit_event(
+                            "tool_call",
+                            {
+                                "step": step_count,
+                                "toolName": tc["name"],
+                                "args": tc.get("args"),
+                                "label": _get_tool_label(tc["name"]),
+                            },
+                        )
 
                 # 流式 token（排除有工具调用的情况）
                 has_tool_call = bool(all_tcs)
                 if msg.content and not has_tool_call:
                     final_answer += msg.content
-                    await emit_event('token', {'token': msg.content})
+                    await emit_event("token", {"token": msg.content})
 
             # tools 节点：ToolMessage（完整工具结果）
-            elif node == 'tools' and hasattr(msg, 'tool_call_id'):
+            elif node == "tools" and hasattr(msg, "tool_call_id"):
                 result = msg.content
                 try:
                     result = json.loads(result)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     pass
-                tool_name = getattr(msg, 'name', '')
-                logger.debug('agent: tool_result', {'tool': tool_name, 'is_dict': isinstance(result, dict)})
+                tool_name = getattr(msg, "name", "")
+                logger.debug("agent: tool_result", {"tool": tool_name, "is_dict": isinstance(result, dict)})
                 tool_result_payload = {
-                    'toolName': tool_name,
-                    'result': result,
-                    'resultText': result if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
+                    "toolName": tool_name,
+                    "result": result,
+                    "resultText": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
                 }
                 # write_report 返回的报告数据单独提取，供前端展示卡片 + 下载
-                if isinstance(result, dict) and result.get('reportId'):
+                if isinstance(result, dict) and result.get("reportId"):
                     last_report = {
-                        'id': result['reportId'],
-                        'title': result.get('title', ''),
-                        'content': result.get('content', ''),
+                        "id": result["reportId"],
+                        "title": result.get("title", ""),
+                        "content": result.get("content", ""),
                     }
-                    tool_result_payload['report'] = last_report
-                    logger.info('agent: report extracted', {'id': result['reportId'], 'title': result.get('title', '')})
-                await emit_event('tool_result', tool_result_payload)
+                    tool_result_payload["report"] = last_report
+                    logger.info("agent: report extracted", {"id": result["reportId"], "title": result.get("title", "")})
+                await emit_event("tool_result", tool_result_payload)
+
+        if not final_answer.strip():
+            raise RuntimeError("Agent 未在步数限制内生成最终回答，请缩小任务范围后重试")
 
         # done 事件附带报告元数据（二级保障）
-        done_payload = {'steps': step_count, 'finalAnswer': final_answer}
+        done_payload = {"steps": step_count, "finalAnswer": final_answer}
         if last_report:
-            done_payload['lastReport'] = last_report
-        await emit_event('done', done_payload)
-        logger.info('agent: done', {'steps': step_count, 'has_report': last_report is not None})
+            done_payload["lastReport"] = last_report
+        await emit_event("done", done_payload)
+        logger.info("agent: done", {"steps": step_count, "has_report": last_report is not None})
     except Exception as err:
         tb_str = traceback.format_exc()
-        logger.error('agent: execution failed', {'error': str(err), 'traceback': tb_str})
-        await emit_event('error', {'message': str(err)})
+        logger.error("agent: execution failed", {"error": str(err), "traceback": tb_str})
+        await emit_event("error", {"message": str(err)})
 
 
 def get_tool_list():
-    """获取所有可用工具列表"""
-    return [{
-        'name': t.name,
-        'label': _get_tool_label(t.name),
-        'description': t.description,
-    } for t in all_tools]
+    """获取工具目录，并明确区分已接入与尚未接入能力。"""
+    return [
+        {
+            "name": t.name,
+            "label": _get_tool_label(t.name),
+            "description": t.description,
+            "available": t.name in AVAILABLE_TOOL_NAMES,
+        }
+        for t in all_tools
+    ]

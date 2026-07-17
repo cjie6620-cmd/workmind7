@@ -14,6 +14,7 @@
 - UNKNOWN: 未知错误
 """
 
+
 class AppError(Exception):
     """
     应用层异常
@@ -26,12 +27,12 @@ class AppError(Exception):
     - user_message: 用户友好的错误提示
     """
 
-    def __init__(self, message, code='UNKNOWN', status_code=500, retryable=False, user_message=None):
+    def __init__(self, message, code="UNKNOWN", status_code=500, retryable=False, user_message=None):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.retryable = retryable
-        self.user_message = user_message or '服务暂时不可用，请稍后重试'
+        self.user_message = user_message or "服务暂时不可用，请稍后重试"
 
 
 def classify_error(err):
@@ -53,21 +54,27 @@ def classify_error(err):
 
     msg = str(err)
     # 尝试从异常对象获取状态码
-    status = getattr(err, 'status_code', None) or getattr(err, 'status', None)
+    status = getattr(err, "status_code", None) or getattr(err, "status", None)
 
     if status == 429:
-        return AppError('API 限流', code='RATE_LIMIT', status_code=429, retryable=True,
-                        user_message='请求太频繁，请稍后重试')
+        return AppError(
+            "API 限流", code="RATE_LIMIT", status_code=429, retryable=True, user_message="请求太频繁，请稍后重试"
+        )
     if status in (401, 403):
-        return AppError('认证失败', code='AUTH_ERROR', status_code=500, retryable=False,
-                        user_message='服务配置错误，请联系管理员')
-    if (status and status >= 500) or 'ECONNRESET' in msg:
-        return AppError('服务不可用', code='SERVICE_ERROR', status_code=503, retryable=True,
-                        user_message='服务暂时不可用，请稍后重试')
-    if 'timeout' in msg.lower():
-        return AppError('请求超时', code='TIMEOUT', status_code=504, retryable=True,
-                        user_message='响应超时，请重试')
-    return AppError(msg, code='UNKNOWN', retryable=False)
+        return AppError(
+            "认证失败", code="AUTH_ERROR", status_code=500, retryable=False, user_message="服务配置错误，请联系管理员"
+        )
+    if (status and status >= 500) or "ECONNRESET" in msg:
+        return AppError(
+            "服务不可用",
+            code="SERVICE_ERROR",
+            status_code=503,
+            retryable=True,
+            user_message="服务暂时不可用，请稍后重试",
+        )
+    if "timeout" in msg.lower():
+        return AppError("请求超时", code="TIMEOUT", status_code=504, retryable=True, user_message="响应超时，请重试")
+    return AppError(msg, code="UNKNOWN", retryable=False)
 
 
 def send_sse_error(err):
@@ -77,4 +84,5 @@ def send_sse_error(err):
     保留此函数仅为向后兼容，新代码请用 sse_error()
     """
     from .sse import sse_error
+
     return sse_error(err)

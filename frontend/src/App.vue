@@ -19,9 +19,10 @@
       </main>
     </div>
 
-    <!-- 全局 Toast 提示（挂在最外层，不受任何布局限制） -->
-    <ToastList />
   </div>
+
+  <!-- 登录页也需要展示认证失败等全局提示 -->
+  <ToastList />
 </template>
 
 <script setup>
@@ -41,6 +42,8 @@ const isLoginPage = computed(() => route.path === '/login')
 <style scoped>
 .login-layout {
   min-height: 100vh;
+  width: 100%;
+  flex: 1;
 }
 
 .app-layout {

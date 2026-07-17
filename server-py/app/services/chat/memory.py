@@ -10,8 +10,7 @@
 - 自动裁剪避免超出 token 限制
 """
 
-from langchain_core.messages import HumanMessage, AIMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, List, Literal
 
 from ..model import get_chat_model
@@ -23,17 +22,19 @@ from ...utils.llm_parse import parse_with_retry
 
 # ── Token 估算 ──────────────────────────────────────────────
 
-def est_tokens(text=''):
+
+def est_tokens(text=""):
     """
     估算文本 token 数量
 
     中文约 0.6 tokens/字符，英文约 0.25 tokens/字符
     """
-    cn = sum(1 for c in text if '一' <= c <= '鿿')
+    cn = sum(1 for c in text if "一" <= c <= "鿿")
     return int(cn * 0.6 + (len(text) - cn) * 0.25)
 
 
 # ── 会话历史管理（PostgreSQL）───────────────────────────────
+
 
 async def get_history_db(session_id: str) -> List[dict]:
     """
@@ -42,22 +43,22 @@ async def get_history_db(session_id: str) -> List[dict]:
     返回消息列表，按时间升序
     """
     from sqlalchemy import select
+
     async with async_session_factory() as session:
         result = await session.execute(
-            select(Conversation)
-            .where(Conversation.session_id == session_id)
-            .order_by(Conversation.created_at)
+            select(Conversation).where(Conversation.session_id == session_id).order_by(Conversation.created_at)
         )
         rows = result.scalars().all()
 
     return [
         {
-            'id': str(row.id),
-            'role': row.role,
-            'content': row.content,
-            'model': row.model,
-            'tokens': row.tokens,
-            'createdAt': row.created_at.isoformat() if row.created_at else None,
+            "id": str(row.id),
+            "role": row.role,
+            "content": row.content,
+            "model": row.model,
+            "tokens": row.tokens,
+            "metadata": row.metadata_ or {},
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
         }
         for row in rows
     ]
@@ -72,19 +73,19 @@ async def get_session_info(session_id: str) -> dict:
     messages = await get_history_db(session_id)
 
     # 生成会话标题：取第一条用户消息的前20字符
-    title = '新对话'
+    title = "新对话"
     for msg in messages:
-        if msg['role'] == 'user':
-            title = msg['content'][:20] + ('...' if len(msg['content']) > 20 else '')
+        if msg["role"] == "user":
+            title = msg["content"][:20] + ("..." if len(msg["content"]) > 20 else "")
             break
 
-    created_at = messages[0]['createdAt'] if messages else None
+    created_at = messages[0]["createdAt"] if messages else None
 
     return {
-        'id': session_id,
-        'title': title,
-        'messages': messages,
-        'createdAt': created_at,
+        "id": session_id,
+        "title": title,
+        "messages": messages,
+        "createdAt": created_at,
     }
 
 
@@ -92,10 +93,10 @@ async def save_message(
     session_id: str,
     role: str,
     content: str,
-    model: str = None,
-    tokens: int = None,
-    metadata: dict = None,
-    user_id: str = None,
+    model: str | None = None,
+    tokens: int | None = None,
+    metadata: dict[str, object] | None = None,
+    user_id: str | None = None,
 ):
     """
     保存单条消息到 PostgreSQL
@@ -120,6 +121,34 @@ async def save_message(
         )
         session.add(msg)
         await session.commit()
+        return str(msg.id)
+
+
+async def set_message_feedback(message_id: str, user_id: str, rating: str) -> bool:
+    """保存助手消息反馈；只能修改当前用户自己的 assistant 消息。"""
+    import uuid
+    from sqlalchemy import select
+
+    try:
+        parsed_id = uuid.UUID(message_id)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.id == parsed_id)
+            .where(Conversation.user_id == user_id)
+            .where(Conversation.role == "assistant")
+        )
+        message = result.scalar_one_or_none()
+        if not message:
+            return False
+        metadata = dict(message.metadata_ or {})
+        metadata["feedback"] = rating
+        message.metadata_ = metadata
+        await session.commit()
+    return True
 
 
 async def save_messages_batch(session_id: str, messages: List[dict]):
@@ -133,17 +162,19 @@ async def save_messages_batch(session_id: str, messages: List[dict]):
     async with async_session_factory() as session:
         async with session.begin():
             for msg in messages:
-                session.add(Conversation(
-                    session_id=session_id,
-                    role=msg['role'],
-                    content=msg['content'],
-                    model=msg.get('model'),
-                    tokens=msg.get('tokens'),
-                ))
+                session.add(
+                    Conversation(
+                        session_id=session_id,
+                        role=msg["role"],
+                        content=msg["content"],
+                        model=msg.get("model"),
+                        tokens=msg.get("tokens"),
+                    )
+                )
         await session.commit()
 
 
-async def clear_history(session_id: str, user_id: str = None):
+async def clear_history(session_id: str, user_id: str | None = None):
     """删除指定会话的所有消息（可选按 user_id 限定）"""
     from sqlalchemy import delete
 
@@ -161,10 +192,10 @@ def trim_history(history: List[dict], max_tokens=2000) -> List[dict]:
 
     从最新消息开始保留，直到达到 token 上限
     """
-    result = []
+    result: list[dict[str, object]] = []
     total = 0
     for msg in reversed(history):
-        t = est_tokens(msg.get('content', ''))
+        t = est_tokens(msg.get("content", ""))
         if total + t > max_tokens:
             break
         result.insert(0, msg)
@@ -173,6 +204,7 @@ def trim_history(history: List[dict], max_tokens=2000) -> List[dict]:
 
 
 # ── 用户画像（PostgreSQL）───────────────────────────────────
+
 
 async def get_profile(user_id: str) -> dict:
     """
@@ -186,8 +218,8 @@ async def get_profile(user_id: str) -> dict:
     async with async_session_factory() as session:
         result = await session.execute(
             select(AgentConfig)
-            .where(AgentConfig.name == f'profile_{user_id}')
-            .where(AgentConfig.config_type == 'profile')
+            .where(AgentConfig.name == f"profile_{user_id}")
+            .where(AgentConfig.config_type == "profile")
         )
         row = result.scalar_one_or_none()
 
@@ -196,13 +228,13 @@ async def get_profile(user_id: str) -> dict:
 
     config = row.config_json
     return {
-        'name': config.get('name'),
-        'dept': config.get('dept'),
-        'tech_level': config.get('tech_level'),
-        'primary_stack': config.get('primary_stack'),
-        'current_goal': config.get('current_goal'),
-        'prefers_short': config.get('prefers_short'),
-        'prefers_code': config.get('prefers_code'),
+        "name": config.get("name"),
+        "dept": config.get("dept"),
+        "tech_level": config.get("tech_level"),
+        "primary_stack": config.get("primary_stack"),
+        "current_goal": config.get("current_goal"),
+        "prefers_short": config.get("prefers_short"),
+        "prefers_code": config.get("prefers_code"),
     }
 
 
@@ -212,13 +244,13 @@ async def get_profile_camel(user_id: str) -> dict:
     """
     profile = await get_profile(user_id)
     return {
-        'name': profile.get('name'),
-        'dept': profile.get('dept'),
-        'techLevel': profile.get('tech_level'),
-        'primaryStack': profile.get('primary_stack'),
-        'currentGoal': profile.get('current_goal'),
-        'prefersShort': profile.get('prefers_short'),
-        'prefersCode': profile.get('prefers_code'),
+        "name": profile.get("name"),
+        "dept": profile.get("dept"),
+        "techLevel": profile.get("tech_level"),
+        "primaryStack": profile.get("primary_stack"),
+        "currentGoal": profile.get("current_goal"),
+        "prefersShort": profile.get("prefers_short"),
+        "prefersCode": profile.get("prefers_code"),
     }
 
 
@@ -228,10 +260,11 @@ async def save_profile(user_id: str, profile: dict):
 
     async with async_session_factory() as session:
         from sqlalchemy import select
+
         result = await session.execute(
             select(AgentConfig)
-            .where(AgentConfig.name == f'profile_{user_id}')
-            .where(AgentConfig.config_type == 'profile')
+            .where(AgentConfig.name == f"profile_{user_id}")
+            .where(AgentConfig.config_type == "profile")
         )
         existing = result.scalar_one_or_none()
 
@@ -239,11 +272,27 @@ async def save_profile(user_id: str, profile: dict):
             existing.config_json = profile
             existing.version += 1
         else:
-            session.add(AgentConfig(
-                config_type='profile',
-                name=f'profile_{user_id}',
-                config_json=profile,
-            ))
+            session.add(
+                AgentConfig(
+                    config_type="profile",
+                    name=f"profile_{user_id}",
+                    config_json=profile,
+                )
+            )
+        await session.commit()
+
+
+async def clear_profile(user_id: str) -> None:
+    """删除当前用户画像，清除操作在刷新和重新登录后仍然生效。"""
+    from sqlalchemy import delete
+    from ...models.entities import AgentConfig
+
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(AgentConfig)
+            .where(AgentConfig.name == f"profile_{user_id}")
+            .where(AgentConfig.config_type == "profile")
+        )
         await session.commit()
 
 
@@ -252,35 +301,37 @@ def profile_to_context(profile):
     将用户画像转换为 system prompt 上下文
     """
     if not profile:
-        return ''
+        return ""
 
     parts = []
-    if profile.get('name'):
+    if profile.get("name"):
         parts.append(f"用户姓名：{profile['name']}")
-    if profile.get('dept'):
+    if profile.get("dept"):
         parts.append(f"部门：{profile['dept']}")
-    if profile.get('tech_level'):
+    if profile.get("tech_level"):
         parts.append(f"技术水平：{profile['tech_level']}")
-    if profile.get('primary_stack'):
+    if profile.get("primary_stack"):
         parts.append(f"技术栈：{', '.join(profile['primary_stack'])}")
-    if profile.get('current_goal'):
+    if profile.get("current_goal"):
         parts.append(f"当前目标：{profile['current_goal']}")
-    if profile.get('prefers_short'):
-        parts.append('偏好简短回答')
-    if profile.get('prefers_code'):
-        parts.append('偏好带代码示例的回答')
+    if profile.get("prefers_short"):
+        parts.append("偏好简短回答")
+    if profile.get("prefers_code"):
+        parts.append("偏好带代码示例的回答")
 
-    return f'\n\n用户背景：\n' + '\n'.join(f'- {p}' for p in parts) if parts else ''
+    return "\n\n用户背景：\n" + "\n".join(f"- {p}" for p in parts) if parts else ""
 
 
 # ── 结构化画像提取 ──────────────────────────────────────────
 
+
 class UserProfile(BaseModel):
     """用户画像数据模型"""
+
     has_info: bool
     name: Optional[str] = None
     dept: Optional[str] = None
-    tech_level: Optional[Literal['初级', '中级', '高级', '架构师']] = None
+    tech_level: Optional[Literal["初级", "中级", "高级", "架构师"]] = None
     primary_stack: Optional[List[str]] = None
     current_goal: Optional[str] = None
     prefers_short: Optional[bool] = None
@@ -304,41 +355,42 @@ async def extract_and_update_profile(user_id, user_msg, ai_reply):
         form = await parse_with_retry(
             get_chat_model(),
             [
-                {'role': 'system', 'content': prompt},
-                {'role': 'user', 'content': f'用户说：{user_msg}\nAI回复：{ai_reply[:200]}'},
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"用户说：{user_msg}\nAI回复：{ai_reply[:200]}"},
             ],
             UserProfile,
         )
         data = form.model_dump()
 
-        if not data.get('has_info'):
+        if not data.get("has_info"):
             return
 
         # 合并更新
         updated = {**current}
-        for key in ['name', 'dept', 'tech_level', 'current_goal', 'prefers_short', 'prefers_code']:
+        for key in ["name", "dept", "tech_level", "current_goal", "prefers_short", "prefers_code"]:
             if data.get(key) is not None:
                 updated[key] = data[key]
 
-        if data.get('primary_stack'):
-            existing = current.get('primary_stack', [])
-            updated['primary_stack'] = list(set(existing + data['primary_stack']))
+        if data.get("primary_stack"):
+            existing = current.get("primary_stack", [])
+            updated["primary_stack"] = list(set(existing + data["primary_stack"]))
 
         await save_profile(user_id, updated)
     except Exception as err:
-        logger.warn('profile extract failed', {'error': str(err), 'userId': user_id})
+        logger.warn("profile extract failed", {"error": str(err), "userId": user_id})
 
 
 def fire_and_forget_profile(user_id, user_msg, ai_reply):
     """异步更新画像，不阻塞响应"""
     import asyncio
+
     asyncio.create_task(extract_and_update_profile(user_id, user_msg, ai_reply))
 
 
 # ── 兼容旧代码的同步接口（内存）─────────────────────────────
 
 # 保留内存版本作为向后兼容，某些场景可能需要
-_memory_store = {}
+_memory_store: dict[str, list[dict[str, object]]] = {}
 
 
 def get_history_sync(session_id):
@@ -351,7 +403,7 @@ def clear_history_sync(session_id):
     _memory_store.pop(session_id, None)
 
 
-async def list_sessions(user_id: str = None) -> List[dict]:
+async def list_sessions(user_id: str | None = None) -> List[dict]:
     """获取会话列表（可按 user_id 过滤），包含标题和消息数"""
     from sqlalchemy import select, func
 
@@ -359,8 +411,8 @@ async def list_sessions(user_id: str = None) -> List[dict]:
         stmt = (
             select(
                 Conversation.session_id,
-                func.count(Conversation.id).label('message_count'),
-                func.min(Conversation.created_at).label('created_at'),
+                func.count(Conversation.id).label("message_count"),
+                func.min(Conversation.created_at).label("created_at"),
             )
             .group_by(Conversation.session_id)
             .order_by(func.min(Conversation.created_at).desc())
@@ -375,23 +427,28 @@ async def list_sessions(user_id: str = None) -> List[dict]:
         for row in rows:
             session_id = row[0]
             # 获取第一条用户消息作为标题
-            title = '新对话'
-            r = await session.execute(
+            title = "新对话"
+            title_stmt = (
                 select(Conversation.content)
                 .where(Conversation.session_id == session_id)
-                .where(Conversation.role == 'user')
+                .where(Conversation.role == "user")
                 .order_by(Conversation.created_at)
                 .limit(1)
             )
+            if user_id:
+                title_stmt = title_stmt.where(Conversation.user_id == user_id)
+            r = await session.execute(title_stmt)
             first_msg = r.scalar_one_or_none()
             if first_msg:
-                title = first_msg[:20] + ('...' if len(first_msg) > 20 else '')
+                title = first_msg[:20] + ("..." if len(first_msg) > 20 else "")
 
-            sessions.append({
-                'id': session_id,
-                'title': title,
-                'messageCount': row[1],
-                'createdAt': row[2].isoformat() if row[2] else None,
-            })
+            sessions.append(
+                {
+                    "id": session_id,
+                    "title": title,
+                    "messageCount": row[1],
+                    "createdAt": row[2].isoformat() if row[2] else None,
+                }
+            )
 
     return sessions

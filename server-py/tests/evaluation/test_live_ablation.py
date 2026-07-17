@@ -13,10 +13,11 @@ Level 3: 消融实验（需要全部基础设施）
 
 import pytest
 
-from .conftest import precision_at_k, recall_at_k, mrr
+from .conftest import precision_at_k
 
 
 # ── Level 3: 混合检索消融 ─────────────────────────────────
+
 
 @pytest.mark.live
 @pytest.mark.slow
@@ -42,23 +43,23 @@ class TestLiveHybridAblation:
         hybrid_scores = []
 
         for q in single_hop_queries[:8]:
-            expected = q['expected_source_titles']
+            expected = q["expected_source_titles"]
 
             # 第一步：完整管线（有 reranker 的混合检索）
             try:
-                hybrid_results = await retrieve_docs(q['user_input'], k=4)
+                hybrid_results = await retrieve_docs(q["user_input"], k=4)
             except Exception as e:
                 pytest.skip(f"retrieve_docs 失败: {e}")
                 return
 
-            hybrid_titles = [r['title'] for r in hybrid_results]
+            hybrid_titles = [r["title"] for r in hybrid_results]
             h_score = precision_at_k(hybrid_titles, expected, k=4)
             hybrid_scores.append(h_score)
 
             # 第二步：仅混合检索（跳过 reranker）
             try:
                 retriever = await get_hybrid_retriever()
-                candidates = await retriever.ainvoke(q['user_input'])
+                candidates = await retriever.ainvoke(q["user_input"])
             except Exception:
                 continue
 
@@ -68,7 +69,7 @@ class TestLiveHybridAblation:
             # 直接取前 4 个候选的标题（无 reranker）
             cand_titles = []
             for doc in candidates[:4]:
-                title = doc.metadata.get('title', '未知来源') if hasattr(doc, 'metadata') else '未知来源'
+                title = doc.metadata.get("title", "未知来源") if hasattr(doc, "metadata") else "未知来源"
                 cand_titles.append(title)
 
             v_score = precision_at_k(cand_titles, expected, k=4)
@@ -83,19 +84,18 @@ class TestLiveHybridAblation:
         avg_hybrid = sum(hybrid_scores) / len(hybrid_scores)
         avg_vector = sum(vector_scores) / len(vector_scores)
 
-        print(f"\n  ── 混合检索消融结果 ──")
+        print("\n  ── 混合检索消融结果 ──")
         print(f"  完整管线（混合+rerank） Precision@4: {avg_hybrid:.3f}")
         print(f"  无 rerank Precision@4: {avg_vector:.3f}")
         print(f"  差异: {avg_hybrid - avg_vector:+.3f}")
 
         # 混合检索至少应达到阻断阈值
-        threshold = eval_thresholds['precision_at_4']['block']
-        assert avg_hybrid >= threshold, (
-            f"混合检索 Precision@4 = {avg_hybrid:.3f} < {threshold}"
-        )
+        threshold = eval_thresholds["precision_at_4"]["block"]
+        assert avg_hybrid >= threshold, f"混合检索 Precision@4 = {avg_hybrid:.3f} < {threshold}"
 
 
 # ── Level 3: 重排序消融 ────────────────────────────────────
+
 
 @pytest.mark.live
 @pytest.mark.slow
@@ -111,7 +111,6 @@ class TestLiveRerankerAblation:
 
     async def test_reranker_improves_precision(self, single_hop_queries):
         """重排序应提升精确度"""
-        from app.services.rag.query import retrieve_docs
         from app.services.rag.hybrid_retriever import get_hybrid_retriever
         from app.services.rag.reranker import get_reranker
 
@@ -119,12 +118,12 @@ class TestLiveRerankerAblation:
         with_rerank_scores = []
 
         for q in single_hop_queries[:8]:
-            expected = q['expected_source_titles']
+            expected = q["expected_source_titles"]
 
             # 第一步：无 reranker（直接用 hybrid retriever 结果）
             try:
                 retriever = await get_hybrid_retriever()
-                candidates = await retriever.ainvoke(q['user_input'])
+                candidates = await retriever.ainvoke(q["user_input"])
             except Exception as e:
                 pytest.skip(f"hybrid retriever 失败: {e}")
                 return
@@ -134,7 +133,7 @@ class TestLiveRerankerAblation:
 
             cand_titles = []
             for doc in candidates[:4]:
-                title = doc.metadata.get('title', '未知来源') if hasattr(doc, 'metadata') else '未知来源'
+                title = doc.metadata.get("title", "未知来源") if hasattr(doc, "metadata") else "未知来源"
                 cand_titles.append(title)
 
             no_rerank_score = precision_at_k(cand_titles, expected, k=4)
@@ -143,20 +142,16 @@ class TestLiveRerankerAblation:
             # 第二步：有 reranker（完整管线）
             try:
                 reranker = get_reranker()
-                ranked = reranker.rerank(q['user_input'], candidates, top_n=4)
+                ranked = reranker.rerank(q["user_input"], candidates, top_n=4)
             except Exception as e:
                 print(f"  [SKIP] reranker 失败: {e}")
                 continue
 
-            ranked_titles = [r['title'] for r in ranked]
+            ranked_titles = [r["title"] for r in ranked]
             with_rerank_score = precision_at_k(ranked_titles, expected, k=4)
             with_rerank_scores.append(with_rerank_score)
 
-            print(
-                f"  [无rerank={no_rerank_score:.2f} / "
-                f"有rerank={with_rerank_score:.2f}] "
-                f"Q: {q['user_input'][:30]}..."
-            )
+            print(f"  [无rerank={no_rerank_score:.2f} / 有rerank={with_rerank_score:.2f}] Q: {q['user_input'][:30]}...")
 
         if not no_rerank_scores or not with_rerank_scores:
             pytest.skip("无有效评测数据")
@@ -165,15 +160,13 @@ class TestLiveRerankerAblation:
         avg_no = sum(no_rerank_scores) / len(no_rerank_scores)
         avg_with = sum(with_rerank_scores) / len(with_rerank_scores)
 
-        print(f"\n  ── 重排序消融结果 ──")
+        print("\n  ── 重排序消融结果 ──")
         print(f"  无 reranker Precision@4: {avg_no:.3f}")
         print(f"  有 reranker Precision@4: {avg_with:.3f}")
         print(f"  提升: {avg_with - avg_no:+.3f}")
 
         # reranker 至少不应降低精度
-        assert avg_with >= avg_no * 0.8, (
-            f"reranker 严重降低了精度: {avg_with:.3f} < {avg_no * 0.8:.3f}"
-        )
+        assert avg_with >= avg_no * 0.8, f"reranker 严重降低了精度: {avg_with:.3f} < {avg_no * 0.8:.3f}"
 
     async def test_reranker_threshold_sensitivity(self, single_hop_queries):
         """不同 reranker 阈值对精度的影响"""
@@ -188,7 +181,7 @@ class TestLiveRerankerAblation:
 
         try:
             retriever = await get_hybrid_retriever()
-            candidates = await retriever.ainvoke(query['user_input'])
+            candidates = await retriever.ainvoke(query["user_input"])
         except Exception as e:
             pytest.skip(f"hybrid retriever 失败: {e}")
             return
@@ -206,6 +199,7 @@ class TestLiveRerankerAblation:
             reranker = CrossEncoderReranker.__new__(CrossEncoderReranker)
             try:
                 from app.services.rag.reranker import get_reranker
+
                 # 复用已加载的模型
                 real_reranker = get_reranker()
                 reranker.model = real_reranker.model
@@ -214,13 +208,13 @@ class TestLiveRerankerAblation:
                 pytest.skip(f"reranker 加载失败: {e}")
                 return
 
-            ranked = reranker.rerank(query['user_input'], candidates, top_n=4)
+            ranked = reranker.rerank(query["user_input"], candidates, top_n=4)
             n_results = len(ranked)
             results[threshold] = n_results
             print(f"  threshold={threshold}: 保留 {n_results} 条结果")
 
         # 阈值越高，保留结果越少
-        print(f"\n  ── 阈值敏感性分析 ──")
+        print("\n  ── 阈值敏感性分析 ──")
         for t, n in sorted(results.items()):
             print(f"  threshold={t}: {n} 条")
 

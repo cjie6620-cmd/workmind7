@@ -13,16 +13,32 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const categories    = ref([])
   const uploading     = ref(false)
   const uploadProgress = ref(0)  // 0-100
+  let uploadController = null
+  let stateVersion = 0
 
   async function loadDocuments(category = '') {
-    const params = category ? `?category=${category}` : ''
-    const data = await http.get(`/knowledge/documents${params}`)
-    documents.value = data.documents
+    const version = stateVersion
+    try {
+      const params = category ? `?category=${category}` : ''
+      const data = await http.get(`/knowledge/documents${params}`)
+      if (version !== stateVersion) return
+      documents.value = data.documents
+    } catch (err) {
+      if (version !== stateVersion || err.code === 'ERR_CANCELED') return
+      appStore.toast.error(err.response?.data?.error?.message || '加载文档失败')
+    }
   }
 
   async function loadCategories() {
-    const data = await http.get('/knowledge/categories')
-    categories.value = data.categories
+    const version = stateVersion
+    try {
+      const data = await http.get('/knowledge/categories')
+      if (version !== stateVersion) return
+      categories.value = data.categories
+    } catch (err) {
+      if (version !== stateVersion || err.code === 'ERR_CANCELED') return
+      appStore.toast.error(err.response?.data?.error?.message || '加载分类失败')
+    }
   }
 
   // 上传文件
@@ -35,66 +51,83 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     formData.append('title', title || file.name.replace(/\.[^.]+$/, ''))
     formData.append('category', category || '通用')
 
+    const controller = new AbortController()
+    const version = stateVersion
+    uploadController = controller
+
     try {
-      // 用原生 XMLHttpRequest 监听上传进度（axios 也可以，用 onUploadProgress）
-      const result = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.open('POST', '/api/knowledge/documents')
-
-        xhr.upload.addEventListener('progress', (e) => {
-          if (e.lengthComputable) {
-            uploadProgress.value = Math.round((e.loaded / e.total) * 80)
+      const result = await http.post('/knowledge/documents', formData, {
+        signal: controller.signal,
+        timeout: 120000,
+        onUploadProgress: (event) => {
+          if (event.total) {
+            uploadProgress.value = Math.round((event.loaded / event.total) * 80)
           }
-        })
-
-        xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            uploadProgress.value = 100
-            resolve(JSON.parse(xhr.responseText))
-          } else {
-            reject(new Error(JSON.parse(xhr.responseText)?.error?.message || '上传失败'))
-          }
-        })
-
-        xhr.addEventListener('error', () => reject(new Error('网络错误')))
-        xhr.send(formData)
+        },
       })
+      if (version !== stateVersion) return null
 
+      uploadProgress.value = 100
       await loadDocuments()
       await loadCategories()
       appStore.toast.success(`「${result.document.title}」已成功入库，共 ${result.document.chunks} 个片段`)
       return result.document
     } catch (err) {
+      if (err.code === 'ERR_CANCELED') return null
       appStore.toast.error(err.message || '上传失败')
       throw err
     } finally {
-      uploading.value = false
-      uploadProgress.value = 0
+      if (uploadController === controller) {
+        uploadController = null
+        uploading.value = false
+        uploadProgress.value = 0
+      }
     }
   }
 
   // 上传纯文本内容
   async function uploadText({ title, category, content }) {
     uploading.value = true
+    const controller = new AbortController()
+    const version = stateVersion
+    uploadController = controller
     try {
-      const data = await http.post('/knowledge/documents', { title, category, content })
+      const data = await http.post(
+        '/knowledge/documents',
+        { title, category, content },
+        { signal: controller.signal, timeout: 120000 },
+      )
+      if (version !== stateVersion) return null
       await loadDocuments()
       await loadCategories()
       appStore.toast.success(`「${data.document.title}」已成功入库`)
       return data.document
     } catch (err) {
+      if (err.code === 'ERR_CANCELED') return null
       appStore.toast.error('入库失败：' + (err.message || '未知错误'))
       throw err
     } finally {
-      uploading.value = false
+      if (uploadController === controller) {
+        uploadController = null
+        uploading.value = false
+      }
     }
   }
 
   async function deleteDocument(docId) {
+    const version = stateVersion
     const doc = documents.value.find(d => d.id === docId)
-    await http.delete(`/knowledge/documents/${docId}`)
-    documents.value = documents.value.filter(d => d.id !== docId)
-    appStore.toast.success(`「${doc?.title}」已删除`)
+    try {
+      await http.delete(`/knowledge/documents/${docId}`)
+      if (version !== stateVersion) return false
+      documents.value = documents.value.filter(d => d.id !== docId)
+      appStore.toast.success(`「${doc?.title}」已删除`)
+      return true
+    } catch (err) {
+      if (version !== stateVersion || err.code === 'ERR_CANCELED') return false
+      appStore.toast.error(err.message || '删除文档失败')
+      return false
+    }
   }
 
   // ── RAG 问答 ───────────────────────────────────────────────
@@ -102,15 +135,18 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const querying     = ref(false)
   const filterCategory = ref('')
   const sessionId    = ref('')   // 当前会话 ID
+  let queryController = null
 
   let msgId = 0
 
   // 页面加载时恢复历史
   async function initSession() {
+    const version = stateVersion
     const sid = localStorage.getItem('kn_session_id')
     if (sid) {
       try {
         const data = await http.get(`/knowledge/history/${sid}`)
+        if (version !== stateVersion) return
         if (data.messages?.length) {
           sessionId.value = sid
           messages.value = data.messages.map(m => ({
@@ -118,17 +154,23 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
             role: m.role,
             content: m.content,
             time: m.createdAt,
-            ...(m.role === 'assistant' && m.metadata?.sources ? { sources: m.metadata.sources } : {}),
+            ...(m.role === 'assistant' && m.metadata?.sources
+              ? { sources: normalizeSources(m.metadata.sources) }
+              : {}),
           }))
           return
         }
-      } catch {}
+      } catch {
+        if (version !== stateVersion) return
+      }
     }
     // 没有历史或加载失败，用新的 sessionId
     newSession()
   }
 
   function newSession() {
+    stopQuery()
+    msgId = 0
     sessionId.value = ''
     messages.value = []
     localStorage.removeItem('kn_session_id')
@@ -155,32 +197,40 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
     messages.value.push(aiMsg)
 
+    const controller = new AbortController()
+    const version = stateVersion
+    queryController = controller
+
     await fetchStream(
       '/api/knowledge/query/stream',
       { question, category: filterCategory.value || undefined, sessionId: sessionId.value || undefined },
       {
+        signal: controller.signal,
         onToken: (token) => {
+          if (version !== stateVersion) return
           aiMsg.content += token
           aiMsg.status = ''
         },
         onEvent: (event, data) => {
+          if (version !== stateVersion) return
           if (event === 'sources') {
-            aiMsg.sources = data.sources
+            aiMsg.sources = normalizeSources(data.sources)
           }
           if (event === 'status') {
             aiMsg.status = data.message
           }
-          // 保存后端返回的 sessionId
-          if (event === 'done' && data.sessionId) {
+        },
+        onDone: (data) => {
+          if (version !== stateVersion) return
+          aiMsg.streaming = false
+          aiMsg.status = ''
+          if (data.sessionId) {
             sessionId.value = data.sessionId
             localStorage.setItem('kn_session_id', data.sessionId)
           }
         },
-        onDone: () => {
-          aiMsg.streaming = false
-          aiMsg.status = ''
-        },
         onError: (err) => {
+          if (version !== stateVersion) return
           aiMsg.streaming = false
           aiMsg.status = ''
           aiMsg.content = aiMsg.content || '查询失败，请重试。'
@@ -189,11 +239,45 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       }
     )
 
-    querying.value = false
+    if (queryController === controller) {
+      queryController = null
+      querying.value = false
+    }
   }
 
   function clearMessages() {
+    newSession()
+  }
+
+  function stopQuery() {
+    queryController?.abort()
+    queryController = null
+    querying.value = false
+    const lastMessage = messages.value[messages.value.length - 1]
+    if (lastMessage?.streaming) {
+      lastMessage.streaming = false
+      lastMessage.status = ''
+    }
+  }
+
+  function stopUpload() {
+    uploadController?.abort()
+    uploadController = null
+    uploading.value = false
+    uploadProgress.value = 0
+  }
+
+  function reset() {
+    stateVersion += 1
+    stopQuery()
+    stopUpload()
+    documents.value = []
+    categories.value = []
+    filterCategory.value = ''
     messages.value = []
+    sessionId.value = ''
+    msgId = 0
+    localStorage.removeItem('kn_session_id')
   }
 
   return {
@@ -202,5 +286,17 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     loadDocuments, loadCategories,
     uploadFile, uploadText, deleteDocument,
     query, clearMessages, initSession, newSession,
+    stopQuery, stopUpload, reset,
   }
 })
+
+function normalizeSources(sources = []) {
+  return sources.map((source) => ({
+    ...source,
+    score: source.score
+      ?? source.rerank_score
+      ?? source.vector_score
+      ?? source.similarity
+      ?? null,
+  }))
+}

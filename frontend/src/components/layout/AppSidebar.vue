@@ -15,6 +15,7 @@
         :key="item.path"
         :to="item.path"
         class="nav-item"
+        :data-testid="`nav-${item.path.slice(1)}`"
         :class="{ active: currentPath.startsWith(item.path) }"
       >
         <el-icon class="nav-icon"><component :is="item.icon" /></el-icon>
@@ -39,23 +40,29 @@
 import { computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useAppStore } from '@/stores/app.js'
+import { useAuthStore } from '@/stores/auth.js'
 
 const route = useRoute()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const currentPath = computed(() => route.path)
 const isDark = computed(() => appStore.theme === 'dark')
 
 // 导航菜单配置（使用 Element Plus 图标名）
-const navItems = [
+const allNavItems = [
   { path: '/chat',      icon: 'ChatDotRound',  label: '智能对话' },
   { path: '/knowledge', icon: 'Reading',        label: '知识库问答' },
   { path: '/agent',     icon: 'Cpu',            label: '任务 Agent' },
   { path: '/workflow',  icon: 'Operation',      label: '内容工作流' },
-  { path: '/erp',       icon: 'Tickets',        label: '报销请假',  badge: 'ERP' },
-  { path: '/prompt',    icon: 'EditPen',        label: 'Prompt 调试' },
-  { path: '/monitor',   icon: 'DataAnalysis',   label: '用量看板' },
+  { path: '/erp',       icon: 'Tickets',        label: '审批预演',  badge: '模拟' },
+  { path: '/prompt',    icon: 'EditPen',        label: 'Prompt 调试', adminOnly: true },
+  { path: '/monitor',   icon: 'DataAnalysis',   label: '用量看板', adminOnly: true },
 ]
+
+const navItems = computed(() =>
+  allNavItems.filter(item => !item.adminOnly || authStore.isAdmin)
+)
 
 function toggleTheme() {
   appStore.toggleTheme()

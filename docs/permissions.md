@@ -1,6 +1,6 @@
 # WorkMind AI — 路由权限矩阵
 
-> 与 `PRODUCTION-READINESS.md` W0b-2 保持同步。最后更新：2026-07-13
+> 与 [生产就绪清单](production-readiness.md) 保持同步。最后更新：2026-07-16
 
 ## 原则
 

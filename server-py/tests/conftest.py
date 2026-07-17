@@ -5,14 +5,13 @@ RAG 测试共享 fixtures
 所有 mock 的 model_name 必须为 "deepseek-chat"，禁止 mock 为 gpt-4o / claude-*。
 """
 
-import asyncio
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
-from typing import AsyncGenerator, List
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import List
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -24,23 +23,25 @@ if SERVER_PY not in sys.path:
 
 # 第二步：设置测试环境变量（必须在 import app 之前）
 # 可通过 TEST_DATABASE_URL 覆盖；本地默认与 docker-compose 端口 5434 对齐
-os.environ.setdefault('DEEPSEEK_API_KEY', 'test-deepseek-key-for-testing')
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key-for-testing")
 os.environ.setdefault(
-    'DATABASE_URL',
+    "DATABASE_URL",
     os.environ.get(
-        'TEST_DATABASE_URL',
-        'postgresql+asyncpg://test:test@localhost:5434/workmind_test',
+        "TEST_DATABASE_URL",
+        "postgresql+asyncpg://test:test@localhost:5434/workmind_test",
     ),
 )
 # 默认关闭认证，避免现有集成测试需携带 token；test_auth.py 内单独开启
-os.environ.setdefault('AUTH_ENABLED', 'false')
-os.environ.setdefault('JWT_SECRET', 'test-jwt-secret-must-be-at-least-32-chars')
+os.environ.setdefault("AUTH_ENABLED", "false")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-must-be-at-least-32-chars")
+os.environ.setdefault("TESTING", "1")
 
-FIXTURES_DIR = Path(__file__).parent / 'fixtures'
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 EMBEDDING_DIM = 1024
 
 
 # ── 向量 Mock（hash 文本 → 1024 维确定向量）────────────────────
+
 
 def _text_to_vector(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
     """基于文本 hash 生成确定性向量，避免加载 2.2GB bge-m3"""
@@ -71,6 +72,7 @@ class MockEmbeddings:
 
 # ── Chat 模型 Mock（预设响应队列）──────────────────────────────
 
+
 class MockChatModel:
     """
     Mock 对话模型，model_name 必须为 "deepseek-chat"
@@ -78,10 +80,10 @@ class MockChatModel:
     支持 ainvoke（非流式）和 astream（流式）两种模式。
     """
 
-    model_name = 'deepseek-chat'
+    model_name = "deepseek-chat"
 
     def __init__(self, responses: List[str] = None):
-        self._responses = list(responses or ['这是一个模拟的回答。'])
+        self._responses = list(responses or ["这是一个模拟的回答。"])
         self._response_index = 0
 
     def set_responses(self, responses: List[str]):
@@ -128,6 +130,7 @@ class MockChatModel:
 
 # ── Reranker Mock（关键词重叠评分）─────────────────────────────
 
+
 class MockReranker:
     """Mock CrossEncoder 重排器，避免加载 560MB 模型"""
 
@@ -142,7 +145,7 @@ class MockReranker:
         query_words = set(query)
         scored = []
         for doc in documents:
-            content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
+            content = doc.page_content if hasattr(doc, "page_content") else str(doc)
             content_words = set(content)
             overlap = len(query_words & content_words)
             score = min(overlap / max(len(query_words), 1), 1.0)
@@ -154,20 +157,23 @@ class MockReranker:
         for doc, score in scored[:top_n]:
             if score < self.threshold:
                 continue
-            meta = doc.metadata if hasattr(doc, 'metadata') else {}
-            results.append({
-                'content': doc.page_content if hasattr(doc, 'page_content') else str(doc),
-                'rerank_score': round(score, 4),
-                'vector_score': meta.get('vector_score', 0),
-                'title': meta.get('title', '未知来源'),
-                'docId': meta.get('docId'),
-                'category': meta.get('category'),
-                'preview': (doc.page_content if hasattr(doc, 'page_content') else str(doc))[:80],
-            })
+            meta = doc.metadata if hasattr(doc, "metadata") else {}
+            results.append(
+                {
+                    "content": doc.page_content if hasattr(doc, "page_content") else str(doc),
+                    "rerank_score": round(score, 4),
+                    "vector_score": meta.get("vector_score", 0),
+                    "title": meta.get("title", "未知来源"),
+                    "docId": meta.get("docId"),
+                    "category": meta.get("category"),
+                    "preview": (doc.page_content if hasattr(doc, "page_content") else str(doc))[:80],
+                }
+            )
         return results
 
 
 # ── Fixtures ────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def reset_singletons(request):
@@ -191,13 +197,13 @@ def reset_singletons(request):
 
     # 第二步：保存原始值
     saved = {
-        'model._chat_model': model_mod._chat_model,
-        'model._embeddings': model_mod._embeddings,
-        'reranker._reranker': reranker_mod._reranker,
-        'store._vector_store': store_mod._vector_store,
-        'hybrid._bm25_retriever': hybrid_mod._bm25_retriever,
-        'hybrid._bm25_stale': hybrid_mod._bm25_stale,
-        'ingest._doc_registry': dict(ingest_mod._doc_registry),
+        "model._chat_model": model_mod._chat_model,
+        "model._embeddings": model_mod._embeddings,
+        "reranker._reranker": reranker_mod._reranker,
+        "store._vector_store": store_mod._vector_store,
+        "hybrid._bm25_retriever": hybrid_mod._bm25_retriever,
+        "hybrid._bm25_stale": hybrid_mod._bm25_stale,
+        "ingest._doc_registry": dict(ingest_mod._doc_registry),
     }
 
     # 第三步：根据 live 标记决定注入策略
@@ -227,19 +233,20 @@ def reset_singletons(request):
     yield
 
     # 第四步：恢复原始值
-    model_mod._chat_model = saved['model._chat_model']
-    model_mod._embeddings = saved['model._embeddings']
-    reranker_mod._reranker = saved['reranker._reranker']
-    store_mod._vector_store = saved['store._vector_store']
-    hybrid_mod._bm25_retriever = saved['hybrid._bm25_retriever']
-    hybrid_mod._bm25_stale = saved['hybrid._bm25_stale']
-    ingest_mod._doc_registry = saved['ingest._doc_registry']
+    model_mod._chat_model = saved["model._chat_model"]
+    model_mod._embeddings = saved["model._embeddings"]
+    reranker_mod._reranker = saved["reranker._reranker"]
+    store_mod._vector_store = saved["store._vector_store"]
+    hybrid_mod._bm25_retriever = saved["hybrid._bm25_retriever"]
+    hybrid_mod._bm25_stale = saved["hybrid._bm25_stale"]
+    ingest_mod._doc_registry = saved["ingest._doc_registry"]
 
 
 @pytest.fixture
 def mock_embeddings():
     """获取 MockEmbeddings 实例"""
     from app.services import model as model_mod
+
     return model_mod._embeddings
 
 
@@ -247,6 +254,7 @@ def mock_embeddings():
 def mock_chat_model():
     """获取 MockChatModel 实例（可调用 set_responses 设置响应）"""
     from app.services import model as model_mod
+
     return model_mod._chat_model
 
 
@@ -254,30 +262,31 @@ def mock_chat_model():
 def mock_reranker():
     """获取 MockReranker 实例"""
     from app.services.rag import reranker as reranker_mod
+
     return reranker_mod._reranker
 
 
 @pytest.fixture
 def golden_dataset() -> List[dict]:
     """加载 golden dataset 评测数据集"""
-    path = FIXTURES_DIR / 'golden_dataset.json'
+    path = FIXTURES_DIR / "golden_dataset.json"
     if not path.exists():
-        pytest.skip('golden_dataset.json 不存在，跳过评测')
-    with open(path, 'r', encoding='utf-8') as f:
+        pytest.skip("golden_dataset.json 不存在，跳过评测")
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 @pytest.fixture
 def expected_chunks() -> dict:
     """加载切片预期结果"""
-    path = FIXTURES_DIR / 'expected_chunks.json'
+    path = FIXTURES_DIR / "expected_chunks.json"
     if not path.exists():
-        pytest.skip('expected_chunks.json 不存在')
-    with open(path, 'r', encoding='utf-8') as f:
+        pytest.skip("expected_chunks.json 不存在")
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 @pytest.fixture
 def sample_documents_dir() -> Path:
     """返回测试文档目录路径"""
-    return FIXTURES_DIR / 'sample_documents'
+    return FIXTURES_DIR / "sample_documents"

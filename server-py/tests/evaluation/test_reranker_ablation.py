@@ -16,6 +16,7 @@ from .conftest import precision_at_k, recall_at_k
 
 # ── 模拟重排序效果 ─────────────────────────────────────────────
 
+
 def _simulate_rerank(
     candidates: list,
     expected_titles: list,
@@ -36,10 +37,7 @@ def _simulate_rerank(
     # 有重排序：期望文档排前，低相关文档被过滤
     reranked = []
     for title in candidates:
-        is_expected = any(
-            t.replace('.txt', '').replace('.md', '') in title
-            for t in expected_titles
-        )
+        is_expected = any(t.replace(".txt", "").replace(".md", "") in title for t in expected_titles)
         # 模拟分数：期望文档 0.8+，其他 0.1
         score = 0.8 + (0.15 if is_expected else 0)
         if score >= threshold:
@@ -52,6 +50,7 @@ def _simulate_rerank(
 
 # ── 消融实验测试 ──────────────────────────────────────────────
 
+
 @pytest.mark.evaluation
 class TestRerankerAblation:
     """重排序消融实验"""
@@ -63,31 +62,35 @@ class TestRerankerAblation:
 
         for q in single_hop_queries:
             # 模拟候选结果（含噪声）
-            candidates = list(q['expected_source_titles'][:2])
-            candidates += ['噪声文档1', '噪声文档2', '噪声文档3'][:4 - len(candidates)]
+            candidates = list(q["expected_source_titles"][:2])
+            candidates += ["噪声文档1", "噪声文档2", "噪声文档3"][: 4 - len(candidates)]
 
             # 有重排序
             reranked = _simulate_rerank(
-                candidates, q['expected_source_titles'],
-                threshold=0.2, top_n=4, enabled=True,
+                candidates,
+                q["expected_source_titles"],
+                threshold=0.2,
+                top_n=4,
+                enabled=True,
             )
-            scores_with.append(precision_at_k(reranked, q['expected_source_titles'], k=4))
+            scores_with.append(precision_at_k(reranked, q["expected_source_titles"], k=4))
 
             # 无重排序
             raw = _simulate_rerank(
-                candidates, q['expected_source_titles'],
-                threshold=0.0, top_n=4, enabled=False,
+                candidates,
+                q["expected_source_titles"],
+                threshold=0.0,
+                top_n=4,
+                enabled=False,
             )
-            scores_without.append(precision_at_k(raw, q['expected_source_titles'], k=4))
+            scores_without.append(precision_at_k(raw, q["expected_source_titles"], k=4))
 
         n = len(single_hop_queries) if single_hop_queries else 1
         avg_with = sum(scores_with) / n
         avg_without = sum(scores_without) / n
 
         # 重排序后 Precision 应 >= 无重排序
-        assert avg_with >= avg_without, (
-            f"重排序后 Precision@4 ({avg_with:.3f}) < 无重排序 ({avg_without:.3f})"
-        )
+        assert avg_with >= avg_without, f"重排序后 Precision@4 ({avg_with:.3f}) < 无重排序 ({avg_without:.3f})"
 
     def test_threshold_sensitivity(self, single_hop_queries):
         """不同阈值的敏感性分析"""
@@ -97,25 +100,28 @@ class TestRerankerAblation:
         for threshold in thresholds:
             scores = []
             for q in single_hop_queries:
-                candidates = list(q['expected_source_titles'][:2])
-                candidates += ['噪声文档1', '噪声文档2'][:4 - len(candidates)]
+                candidates = list(q["expected_source_titles"][:2])
+                candidates += ["噪声文档1", "噪声文档2"][: 4 - len(candidates)]
 
                 reranked = _simulate_rerank(
-                    candidates, q['expected_source_titles'],
-                    threshold=threshold, top_n=4, enabled=True,
+                    candidates,
+                    q["expected_source_titles"],
+                    threshold=threshold,
+                    top_n=4,
+                    enabled=True,
                 )
-                scores.append(precision_at_k(reranked, q['expected_source_titles'], k=4))
+                scores.append(precision_at_k(reranked, q["expected_source_titles"], k=4))
 
             n = len(scores) if scores else 1
             results[threshold] = {
-                'precision': sum(scores) / n,
-                'num_queries': len(scores),
+                "precision": sum(scores) / n,
+                "num_queries": len(scores),
             }
 
         # 验证所有阈值都产生了有效结果
         assert len(results) == 4
         for t, metrics in results.items():
-            assert 0 <= metrics['precision'] <= 1
+            assert 0 <= metrics["precision"] <= 1
 
     def test_higher_threshold_should_increase_precision(self, single_hop_queries):
         """更高的阈值应导致更高的 Precision（但可能降低 Recall）"""
@@ -126,14 +132,17 @@ class TestRerankerAblation:
         for t in thresholds:
             scores = []
             for q in single_hop_queries[:20]:
-                candidates = list(q['expected_source_titles'][:1])
-                candidates += ['噪声文档'] * 3
+                candidates = list(q["expected_source_titles"][:1])
+                candidates += ["噪声文档"] * 3
 
                 reranked = _simulate_rerank(
-                    candidates, q['expected_source_titles'],
-                    threshold=t, top_n=4, enabled=True,
+                    candidates,
+                    q["expected_source_titles"],
+                    threshold=t,
+                    top_n=4,
+                    enabled=True,
                 )
-                scores.append(precision_at_k(reranked, q['expected_source_titles'], k=4))
+                scores.append(precision_at_k(reranked, q["expected_source_titles"], k=4))
 
             n = len(scores) if scores else 1
             precision_scores[t] = sum(scores) / n
@@ -146,22 +155,27 @@ class TestRerankerAblation:
         bad_cases = []
 
         for q in single_hop_queries:
-            candidates = list(q['expected_source_titles'][:1])
-            candidates += ['噪声文档'] * 3
+            candidates = list(q["expected_source_titles"][:1])
+            candidates += ["噪声文档"] * 3
 
             reranked = _simulate_rerank(
-                candidates, q['expected_source_titles'],
-                threshold=0.2, top_n=4, enabled=True,
+                candidates,
+                q["expected_source_titles"],
+                threshold=0.2,
+                top_n=4,
+                enabled=True,
             )
-            score = precision_at_k(reranked, q['expected_source_titles'], k=4)
+            score = precision_at_k(reranked, q["expected_source_titles"], k=4)
 
             if score < 0.5:
-                bad_cases.append({
-                    'query': q['user_input'],
-                    'expected': q['expected_source_titles'],
-                    'retrieved': reranked,
-                    'precision': score,
-                })
+                bad_cases.append(
+                    {
+                        "query": q["user_input"],
+                        "expected": q["expected_source_titles"],
+                        "retrieved": reranked,
+                        "precision": score,
+                    }
+                )
 
         # bad case 分析：应能生成 bad case 列表
         # 不要求 bad case 数量为 0（这是模拟模式）
@@ -169,14 +183,14 @@ class TestRerankerAblation:
 
     def test_should_generate_reranker_report(self, single_hop_queries):
         """应能生成重排序效果报告"""
-        report_lines = ['配置, Precision@4, Recall@4']
+        report_lines = ["配置, Precision@4, Recall@4"]
 
         configs = [
-            ('无重排序', False, 0.0),
-            ('重排序(threshold=0.1)', True, 0.1),
-            ('重排序(threshold=0.2, 默认)', True, 0.2),
-            ('重排序(threshold=0.3)', True, 0.3),
-            ('重排序(threshold=0.5)', True, 0.5),
+            ("无重排序", False, 0.0),
+            ("重排序(threshold=0.1)", True, 0.1),
+            ("重排序(threshold=0.2, 默认)", True, 0.2),
+            ("重排序(threshold=0.3)", True, 0.3),
+            ("重排序(threshold=0.5)", True, 0.5),
         ]
 
         for name, enabled, threshold in configs:
@@ -184,19 +198,20 @@ class TestRerankerAblation:
             scores_r = []
 
             for q in single_hop_queries:
-                candidates = list(q['expected_source_titles'][:1])
-                candidates += ['噪声文档'] * 3
+                candidates = list(q["expected_source_titles"][:1])
+                candidates += ["噪声文档"] * 3
 
                 reranked = _simulate_rerank(
-                    candidates, q['expected_source_titles'],
-                    threshold=threshold, top_n=4, enabled=enabled,
+                    candidates,
+                    q["expected_source_titles"],
+                    threshold=threshold,
+                    top_n=4,
+                    enabled=enabled,
                 )
-                scores_p.append(precision_at_k(reranked, q['expected_source_titles'], k=4))
-                scores_r.append(recall_at_k(reranked, q['expected_source_titles'], k=4))
+                scores_p.append(precision_at_k(reranked, q["expected_source_titles"], k=4))
+                scores_r.append(recall_at_k(reranked, q["expected_source_titles"], k=4))
 
             n = len(single_hop_queries) if single_hop_queries else 1
-            report_lines.append(
-                f"{name}, {sum(scores_p) / n:.3f}, {sum(scores_r) / n:.3f}"
-            )
+            report_lines.append(f"{name}, {sum(scores_p) / n:.3f}, {sum(scores_r) / n:.3f}")
 
         assert len(report_lines) == 6

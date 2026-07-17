@@ -53,7 +53,7 @@
 <script setup>
 import { useWorkflowStore } from '@/stores/workflow.js'
 
-const props = defineProps({
+defineProps({
   nodes: { type: Array, default: () => [] },
 })
 

@@ -79,7 +79,7 @@
       </div>
       <div class="table-wrap">
         <table class="call-table">
-          <thead><tr><th>时间</th><th>功能</th><th>输入 T</th><th>输出 T</th><th>费用</th><th>延迟</th><th>来源</th></tr></thead>
+          <thead><tr><th>时间（{{ s.overview?.businessTimezone || '业务时区' }}）</th><th>功能</th><th>输入 T</th><th>输出 T</th><th>费用</th><th>延迟</th><th>来源</th></tr></thead>
           <tbody>
             <tr v-if="!filteredCalls.length"><td colspan="7" class="empty-row">暂无记录，进行操作后刷新</td></tr>
             <tr v-for="(c,i) in filteredCalls" :key="i" :class="{ 'from-cache': c.fromCache }">
@@ -110,11 +110,23 @@ let pollTimer = null
 const featureNames = { chat:'对话助手', knowledge:'RAG 知识库', agent:'任务 Agent', workflow:'内容工作流', erp:'ERP 审批', prompt:'Prompt 调试' }
 function featureLabel(f) { return featureNames[f] || f }
 async function loadStats() {
-  try { const d = await http.get('/monitor/stats'); s.value = d; newBudget.value = d.overview?.dailyBudget ?? 50 } catch {}
+  try {
+    const d = await http.get('/monitor/stats')
+    s.value = d
+    newBudget.value = d.overview?.dailyBudget ?? 50
+  } catch (err) {
+    console.warn('加载监控统计失败', err.message)
+  }
 }
 async function updateBudget() {
-  await http.put('/monitor/budget', { dailyBudget: newBudget.value })
-  await loadStats(); showBE.value = false; appStore.toast.success('预算已更新')
+  try {
+    await http.put('/monitor/budget', { dailyBudget: newBudget.value }, { silent: true })
+    await loadStats()
+    showBE.value = false
+    appStore.toast.success('预算已更新')
+  } catch (err) {
+    appStore.toast.error(err.response?.data?.error?.message || '预算更新失败')
+  }
 }
 // ── ECharts 图表配置 ──────────────────────────────────────────────
 const CHART_COLORS = ['#6366f1', '#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6']
@@ -164,7 +176,13 @@ const tokenUsed = computed(() => (s.value.overview?.tokenInputToday ?? 0) + (s.v
 function fmtNum(n) { return n == null ? '0' : n.toLocaleString() }
 const filteredCalls = computed(() => { const c = s.value.recentCalls||[]; return featureFilter.value ? c.filter(x=>x.feature===featureFilter.value) : c })
 const featureOptions = computed(() => [...new Set((s.value.recentCalls||[]).map(c=>c.feature))].map(f=>({ feature:f, label:featureLabel(f) })))
-function fmtTime(iso) { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}` }
+function fmtTime(iso) {
+  if (!iso) return ''
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: s.value.overview?.businessTimezone || 'Asia/Shanghai',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(new Date(iso))
+}
 onMounted(() => { loadStats(); pollTimer = setInterval(loadStats, 10000) })
 onUnmounted(() => clearInterval(pollTimer))
 </script>

@@ -12,29 +12,27 @@ RAG 生成质量评测（RAGAS）
 2. Live 模式（@pytest.mark.live）：调用真实 DeepSeek API
 """
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 
 # ── RAGAS 数据格式验证测试 ────────────────────────────────────
+
 
 class TestEvaluationDatasetFormat:
     """验证 golden dataset 转换为 RAGAS EvaluationDataset 的格式正确性"""
 
     def test_golden_dataset_should_have_required_fields(self, golden_dataset):
         """每条 golden data 应包含 RAGAS 所需字段"""
-        required_fields = ['user_input', 'reference', 'expected_source_titles']
+        required_fields = ["user_input", "reference", "expected_source_titles"]
         for q in golden_dataset[:10]:  # 抽检前 10 条
             for field in required_fields:
                 assert field in q, f"缺少字段: {field}"
 
     def test_golden_dataset_should_have_valid_query_types(self, golden_dataset):
         """查询类型应覆盖四种分类"""
-        types = set(q['query_type'] for q in golden_dataset)
-        assert 'single_hop_specific' in types
-        assert 'single_hop_abstract' in types or 'multi_hop_specific' in types
+        types = set(q["query_type"] for q in golden_dataset)
+        assert "single_hop_specific" in types
+        assert "single_hop_abstract" in types or "multi_hop_specific" in types
 
     def test_golden_dataset_should_have_80_entries(self, golden_dataset):
         """golden dataset 应有 80 条数据"""
@@ -48,26 +46,27 @@ class TestRagasDataConversion:
         """golden dataset 应能转换为 RAGAS 所需格式"""
         ragas_data = []
         for q in golden_dataset[:5]:
-            if not q['expected_source_titles']:
+            if not q["expected_source_titles"]:
                 continue
 
             entry = {
-                'user_input': q['user_input'],
-                'retrieved_contexts': [f'模拟上下文：{q["reference"]}'],
-                'response': q['reference'],
-                'reference': q['reference'],
+                "user_input": q["user_input"],
+                "retrieved_contexts": [f"模拟上下文：{q['reference']}"],
+                "response": q["reference"],
+                "reference": q["reference"],
             }
             ragas_data.append(entry)
 
         assert len(ragas_data) >= 3
         for entry in ragas_data:
-            assert 'user_input' in entry
-            assert 'retrieved_contexts' in entry
-            assert 'response' in entry
-            assert 'reference' in entry
+            assert "user_input" in entry
+            assert "retrieved_contexts" in entry
+            assert "response" in entry
+            assert "reference" in entry
 
 
 # ── 生成质量指标（CI 模式 - Mock）────────────────────────────
+
 
 @pytest.mark.evaluation
 class TestGenerationQualityMock:
@@ -81,32 +80,33 @@ class TestGenerationQualityMock:
         """Faithfulness 应达到阻断阈值（模拟）"""
         # 模拟评测结果：假设 Faithfulness 为 0.85
         simulated_faithfulness = 0.85
-        threshold = eval_thresholds['faithfulness']['block']
+        threshold = eval_thresholds["faithfulness"]["block"]
         assert simulated_faithfulness >= threshold
 
     def test_context_recall_should_meet_threshold(self, eval_thresholds):
         """ContextRecall 应达到阻断阈值（模拟）"""
         simulated_recall = 0.78
-        threshold = eval_thresholds['context_recall']['block']
+        threshold = eval_thresholds["context_recall"]["block"]
         assert simulated_recall >= threshold
 
     def test_factual_correctness_should_meet_threshold(self, eval_thresholds):
         """FactualCorrectness 应达到阻断阈值（模拟）"""
         simulated_factual = 0.82
-        threshold = eval_thresholds['factual_correctness']['block']
+        threshold = eval_thresholds["factual_correctness"]["block"]
         assert simulated_factual >= threshold
 
     def test_thresholds_are_configured(self, eval_thresholds):
         """阻断阈值应已配置"""
-        required = ['faithfulness', 'context_recall', 'factual_correctness']
+        required = ["faithfulness", "context_recall", "factual_correctness"]
         for metric in required:
             assert metric in eval_thresholds
-            assert 'block' in eval_thresholds[metric]
-            assert 'warn' in eval_thresholds[metric]
-            assert 0 < eval_thresholds[metric]['block'] < 1
+            assert "block" in eval_thresholds[metric]
+            assert "warn" in eval_thresholds[metric]
+            assert 0 < eval_thresholds[metric]["block"] < 1
 
 
 # ── 生成质量指标（Live 模式 - 真实 API）──────────────────────
+
 
 @pytest.mark.evaluation
 @pytest.mark.live
@@ -120,21 +120,23 @@ class TestGenerationQualityLive:
 
     def test_ragas_evaluation_with_real_llm(self, golden_dataset):
         """使用真实 DeepSeek API 运行 RAGAS 评测"""
-        pytest.importorskip('ragas', reason='ragas 未安装')
+        pytest.importorskip("ragas", reason="ragas 未安装")
 
         from ragas import EvaluationDataset
 
         # 第一步：从 golden dataset 构建 EvaluationDataset
         eval_data = []
         for q in golden_dataset[:10]:
-            if not q['expected_source_titles']:
+            if not q["expected_source_titles"]:
                 continue
-            eval_data.append({
-                'user_input': q['user_input'],
-                'retrieved_contexts': [q['reference']],
-                'response': q['reference'],
-                'reference': q['reference'],
-            })
+            eval_data.append(
+                {
+                    "user_input": q["user_input"],
+                    "retrieved_contexts": [q["reference"]],
+                    "response": q["reference"],
+                    "reference": q["reference"],
+                }
+            )
 
         dataset = EvaluationDataset.from_list(eval_data)
         assert len(dataset) > 0

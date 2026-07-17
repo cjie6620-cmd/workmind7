@@ -16,14 +16,17 @@ _pool = None
 def _get_pool():
     global _pool
     if _pool is None:
-        rc = config['redis']
+        rc = config["redis"]
         _pool = redis.ConnectionPool(
-            host=rc['host'],
-            port=rc['port'],
-            password=rc['password'],
-            db=rc['db'],
+            host=rc["host"],
+            port=rc["port"],
+            password=rc["password"],
+            db=rc["db"],
             decode_responses=True,
             max_connections=10,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            health_check_interval=30,
         )
     return _pool
 

@@ -60,48 +60,34 @@
 
 ---
 
-## 角色规则索引（Python + FastAPI/Flask + Agent + RAG 专属规范）
+## 角色规则索引（已归档）
 
-> 本项目下所有 Python LLM 应用开发任务的 AI Agent 行为规范。角色模板位于 `.claude/roles/`，内容已针对 **FastAPI/Flask 异步栈 + LangChain/LlamaIndex + LangGraph/smolagents + Langfuse/Guardrails** 全栈定制。
+> **2026-07-17 起**：仓库内 `.claude/roles/` 角色模板文件已移除，不再作为可加载路径。  
+> 开发仍须遵守本文件其余章节（国产模型、分层、测试、安全、Prompt 管理等），以及 `docs/permissions.md`、`docs/production-readiness.md`、`docs/bug-audit-2026-07-17.md`。
 
-> **🔥 模型合规约束（强制）**：所有 LLM 调用**必须使用国产大模型**（主力 **DeepSeek**，备选通义千问 / 智谱 GLM / 零一万物 / 豆包），**禁止使用任何国外 API**（OpenAI / Anthropic / Cohere / Jina / OpenRouter）。详见 [agent.md §1.1](.claude/roles/agent.md#11-llm-provider-抽象) 与各角色「禁止事项」章节。
+> **模型合规约束（强制）**：所有 LLM 调用**必须使用国产大模型**（主力 **DeepSeek**，备选通义千问 / 智谱 GLM / 零一万物 / 豆包），**禁止使用任何国外 API**（OpenAI / Anthropic / Cohere / Jina / OpenRouter）。
 
-| 角色 | 文件 | 何时加载 | 行数 |
-|------|------|----------|------|
-| 🎨 **Frontend** | [.claude/roles/frontend.md](.claude/roles/frontend.md) | 修改 `.vue` / `.ts` / `.tsx` 文件、AI 聊天 UI、Pinia store | ~450 |
-| 🐍 **Backend-FastAPI** | [.claude/roles/backend-fastapi.md](.claude/roles/backend-fastapi.md) | 修改 `app/api/`、`app/services/`、FastAPI 路由、Pydantic Schema | ~700 |
-| 🐍 **Backend-Flask** | [.claude/roles/backend-flask.md](.claude/roles/backend-flask.md) | 修改 Flask Blueprint、marshmallow Schema、Celery 任务、同步场景 | ~600 |
-| 🗄️ **DBA** | [.claude/roles/dba.md](.claude/roles/dba.md) | 修改 `app/models/`、Alembic 迁移、PGVector 列、seed 脚本 | ~200 |
-| 🚀 **DevOps** | [.claude/roles/devops.md](.claude/roles/devops.md) | 修改 `Dockerfile`、`docker-compose.yml`、部署脚本、GPU 编排、监控 | ~500 |
-| 🔍 **Reviewer** | [.claude/roles/reviewer.md](.claude/roles/reviewer.md) | PR Review、代码审查、CI 流水线门禁 | ~250 |
-| 🤖 **Agent（核心）** | [.claude/roles/agent.md](.claude/roles/agent.md) | 设计/修改 RAG 检索、Agent Loop、Prompt 模板、向量库、Memory、LLM Ops | ~650 |
-| 🤖 **Agent-RAG** | [.claude/roles/agent-rag.md](.claude/roles/agent-rag.md) | RAG 检索增强、VectorStore 设计、混合检索、Re-ranking | ~180 |
-| 🤖 **Agent-LLMOps** | [.claude/roles/agent-llmops.md](.claude/roles/agent-llmops.md) | Memory 策略、Langfuse 可观测、Guardrails、失败回退 | ~160 |
-| 🤖 **Agent-Cost** | [.claude/roles/agent-cost.md](.claude/roles/agent-cost.md) | Token 预算、成本监控、评估流水线、延迟优化 | ~120 |
-| 📝 **Prompt Engineering** | [.claude/roles/prompt-engineering.md](.claude/roles/prompt-engineering.md) | 设计/修改 Prompt 模板、Prompt 优化、Few-shot 设计、RAG Prompt | ~600 |
-| 🔌 **MCP** | [.claude/roles/mcp.md](.claude/roles/mcp.md) | 开发 MCP Server、MCP Tool 设计、MCP 与 Agent 集成 | ~500 |
-| 🧠 **Skill** | [.claude/roles/skill.md](.claude/roles/skill.md) | 创建 Skill、优化 Skill 触发、Skill 与 Agent 集成 | ~400 |
-| 📊 **RAG Evaluation** | [.claude/roles/rag-evaluation.md](.claude/roles/rag-evaluation.md) | RAG 评测、指标设计、评测流水线、CI 门禁 | ~500 |
+### 任务特征 → 关注点（替代原 role 加载表）
 
-### 任务特征 → 角色自动加载映射表
+| 任务类型 | 必查重点 |
+|----------|----------|
+| 前端 Vue / Pinia / SSE | 路由守卫、store 生命周期、`silent` 错误提示、DOMPurify |
+| FastAPI 路由 / Service | 分层、owner/幂等、SSE 终态、预算守卫 |
+| 模型 / Alembic / PGVector | 迁移可回滚、UTC-naive、文档 owner 隔离 |
+| Docker / CI | Linux CPU 锁文件、Compose health、CI markers |
+| RAG / Agent / Prompt | 检索隔离、断连不取消已受理任务、评测 markers |
 
-AI Agent 在执行任务前，**必须**根据任务类型自动加载对应角色文件：
+---
 
-| 任务类型 | 加载角色 | 触发关键词 |
-|----------|----------|----------|
-| 修改前端组件、聊天界面、SSE 消息解析、Pinia store | `frontend.md` | `.vue`、`.ts`、chat、SSE、Markdown、消息渲染 |
-| 修改 FastAPI 路由、Service 层、Pydantic Schema、依赖注入 | `backend-fastapi.md` | FastAPI、router、endpoint、Depends、Schema、Service、async |
-| 修改 Flask Blueprint、marshmallow Schema、Celery 任务 | `backend-flask.md` | Flask、Blueprint、marshmallow、Celery、WSGI、同步 |
-| 修改 SQLAlchemy 模型、Alembic 迁移、PGVector 列、seed 脚本 | `dba.md` | model、migration、alembic、PGVector、JSONB、seed |
-| 修改 Docker Compose、vLLM 部署、监控、CI/CD 脚本 | `devops.md` | docker、compose、vLLM、deploy、prometheus、grafana |
-| PR Review、代码审查、合并前检查 | `reviewer.md` | review、审查、PR、checklist、严重/建议/Nit |
-| 设计/修改 RAG 切片、Agent Loop、Prompt、向量库、Memory、Guardrails | **`agent.md`（最关键）** | RAG、Agent、Prompt、Embedding、VectorStore、LangGraph、Langfuse、Guardrails |
-| 设计/优化 Prompt 模板、Few-shot 设计、RAG Prompt 优化 | `prompt-engineering.md` | prompt、few-shot、coT、RAG prompt、模板 |
-| 开发 MCP Server、MCP Tool、MCP 与 Agent 集成 | `mcp.md` | MCP、tool server、FastMCP、tool 设计 |
-| 创建 Skill、优化 Skill 触发、Skill 编排 | `skill.md` | skill、SKILL.md、知识包、workflow |
-| RAG 评测、指标设计、评测流水线、CI 门禁 | `rag-evaluation.md` | RAGAS、评测、faithfulness、context recall、golden dataset、评测流水线 |
+## （以下原「角色协作 / 通用规则」仍有效；忽略对 `.claude/roles/*.md` 的链接）
 
-> **特别强调**：任何涉及 LLM 应用核心逻辑（检索、生成、Agent、Prompt）的任务，**必须**先加载 `agent.md`，它定义了 RAG/Agent/LLM Ops 的全部设计约束。
+### 通用规则（所有任务都遵守）
+
+1. **命令式口吻，强约束**：使用「必须」「禁止」「不用」「强制」等强约束词，不使用「建议」「可以」「推荐」等弱约束词。
+2. **❌/✅ 反例对照**：在关键设计/取舍点必须给出 ❌ 错误示例 + ✅ 正确示例。
+3. **代码即规范**：所有代码片段必须可直接复制使用（包含完整 import、版本号、配置项）。
+4. **版本固定**：技术栈表中的所有版本号必须精确（不能写"最新"），便于复现。
+5. **跨文档引用**：优先引用本仓库 `docs/` 与本文件章节，不再依赖已删除的 `.claude/roles/*`。
 
 ### 通用规则（所有角色都遵守）
 

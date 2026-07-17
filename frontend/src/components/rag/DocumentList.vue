@@ -47,6 +47,7 @@
           <div class="doc-preview">{{ doc.preview }}</div>
         </div>
         <button
+          v-if="canDelete(doc)"
           class="btn-delete"
           @click="confirmDelete(doc)"
           title="删除文档"
@@ -61,10 +62,10 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useKnowledgeStore } from '@/stores/knowledge.js'
-import { useAppStore } from '@/stores/app.js'
+import { useAuthStore } from '@/stores/auth.js'
 
 const knStore  = useKnowledgeStore()
-const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const activeCategory = ref('')
 
@@ -76,6 +77,12 @@ const filteredDocs = computed(() => {
 function switchCategory(cat) {
   activeCategory.value = cat
   knStore.loadDocuments(cat)
+}
+
+function canDelete(doc) {
+  return authStore.isAdmin || (
+    Boolean(doc.ownerUserId) && doc.ownerUserId === authStore.user?.userId
+  )
 }
 
 function docIcon(doc) {

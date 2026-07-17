@@ -7,6 +7,13 @@
         <button v-if="agentStore.tasks.length" class="btn-text-sm" @click="agentStore.clearTasks()">清空</button>
       </div>
       <div class="task-input-area">
+        <label class="config-selector-label" for="agent-config">运行配置</label>
+        <select id="agent-config" v-model="agentStore.selectedConfigId" class="config-selector" :disabled="agentStore.running">
+          <option v-if="!agentStore.activeAgentConfigs.length" value="">系统默认</option>
+          <option v-for="cfg in agentStore.activeAgentConfigs" :key="cfg.id" :value="cfg.id">
+            {{ cfg.name }}
+          </option>
+        </select>
         <textarea v-model="taskText" class="task-textarea" placeholder="描述你的任务，Agent 会自动拆解步骤..." :disabled="agentStore.running" @keydown.ctrl.enter="runTask" rows="4" />
         <div class="input-actions">
           <span class="hint">Ctrl+Enter 执行</span>
@@ -23,16 +30,25 @@
         </div>
       </div>
       <div class="tools-section">
-        <div class="section-label">可用工具（{{ agentStore.toolList.length }}）</div>
+        <div class="section-label">工具能力</div>
         <div class="tool-chips">
-          <div v-for="t in agentStore.toolList" :key="t.name" class="tool-chip" :title="t.description">{{ t.label }}</div>
+          <div
+            v-for="t in agentStore.toolList"
+            :key="t.name"
+            class="tool-chip"
+            :class="{ unavailable: t.available === false }"
+            :title="t.description"
+          >{{ t.label }}{{ t.available === false ? '（未接入）' : '' }}</div>
         </div>
       </div>
       <div class="configs-section">
-        <div class="section-label">Agent 配置（{{ agentStore.agentConfigs.length }}）</div>
-        <div v-if="!agentStore.agentConfigs.length" class="config-empty">暂无已保存配置</div>
-        <div v-for="cfg in agentStore.agentConfigs" :key="cfg.id" class="config-item" @click="viewConfig(cfg)">
-          <div class="config-name">{{ cfg.name }}</div>
+        <div class="section-label">Agent 配置（{{ visibleConfigs.length }}）</div>
+        <div v-if="!visibleConfigs.length" class="config-empty">暂无可用配置</div>
+        <div v-for="cfg in visibleConfigs" :key="cfg.id" class="config-item" :class="{ selected: cfg.id === agentStore.selectedConfigId, inactive: !cfg.isActive }" @click="viewConfig(cfg)">
+          <div class="config-name-row">
+            <div class="config-name">{{ cfg.name }}</div>
+            <span class="config-status">{{ cfg.isActive ? '启用' : '停用' }}</span>
+          </div>
           <div class="config-desc">{{ cfg.description || '无描述' }}</div>
           <div class="config-tools">
             <span v-for="t in cfg.tools?.slice(0, 3)" :key="t" class="tool-chip-sm">{{ t }}</span>
@@ -60,6 +76,7 @@
               <span class="task-index">任务 #{{ task.id }}</span>
               <span class="task-time">{{ formatTime(task.startTime) }}</span>
               <span v-if="task.duration" class="task-duration">{{ (task.duration / 1000).toFixed(1) }}s</span>
+              <span class="task-config">{{ task.configName || '历史配置' }}</span>
             </div>
             <div class="task-desc">{{ task.task }}</div>
           </div>
@@ -113,7 +130,7 @@
             </div>
           </div>
           <div class="detail-actions">
-            <button class="btn btn-ghost" @click="deleteConfigItem(currentConfig)">删除配置</button>
+            <button v-if="authStore.isAdmin" class="btn btn-ghost" @click="deleteConfigItem(currentConfig)">删除配置</button>
           </div>
         </div>
       </div>
@@ -121,18 +138,25 @@
   </div>
 </template>
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAgentStore } from '@/stores/agent.js'
 import { useConfigStore } from '@/stores/config.js'
 import { useAppStore } from '@/stores/app.js'
+import { useAuthStore } from '@/stores/auth.js'
 import ToolCallCard from '@/components/agent/ToolCallCard.vue'
 import { renderMarkdown } from '@/utils/markdown.js'
 
 const agentStore = useAgentStore()
 const configStore = useConfigStore()
 const appStore   = useAppStore()
+const authStore  = useAuthStore()
 const taskText   = ref('')
 const taskListEl = ref(null)
+const visibleConfigs = computed(() =>
+  authStore.isAdmin
+    ? agentStore.agentConfigs
+    : agentStore.activeAgentConfigs
+)
 
 function renderMd(t) { return renderMarkdown(t) }
 function formatTime(iso) { return iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '' }
@@ -148,12 +172,12 @@ function viewConfig(cfg) {
   showConfigDetail.value = true
 }
 async function deleteConfigItem(cfg) {
+  if (!authStore.isAdmin) return
   if (!confirm(`确定删除配置「${cfg.name}」？`)) return
   await configStore.deleteConfig(cfg.id, 'agent')
   agentStore.loadAgentConfigs()
   if (currentConfig.value?.id === cfg.id) showConfigDetail.value = false
 }
-function extractReportId(text) { const m = text.match(/报告ID[：:]\s*([a-f0-9]{12})/); return m ? m[1] : null }
 function extractReportTitle(text) { const m = text.match(/# (.+)/); return m ? m[1] : '报告' }
 /** 从回答文本中提取真正的报告正文（去掉 LLM 引导语） */
 function extractReportBody(text) {
@@ -187,6 +211,7 @@ async function downloadReport(task) {
   appStore.toast.success('报告已下载')
 }
 onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
+onUnmounted(() => agentStore.stopTask())
 </script>
 <style scoped>
 .agent-view { display:flex; height:100%; overflow:hidden; background:var(--color-bg); }
@@ -196,6 +221,8 @@ onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
 .btn-text-sm { font-size:11px; color:var(--color-text-muted); background:none; border:none; cursor:pointer; }
 .task-input-area { padding:var(--space-md); border-bottom:1px solid var(--color-border-light); }
 .task-textarea { width:100%; padding:10px 12px; background:var(--color-bg); border:1.5px solid var(--color-border); border-radius:var(--radius-lg); font-size:13px; line-height:1.65; color:var(--color-text); resize:none; box-sizing:border-box; font-family:inherit; transition:border-color var(--transition); }
+.config-selector-label { display:block; margin-bottom:4px; font-size:10px; font-weight:700; color:var(--color-text-muted); text-transform:uppercase; letter-spacing:.06em; }
+.config-selector { width:100%; margin-bottom:8px; padding:7px 9px; color:var(--color-text); background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius-md); font-size:12px; }
 .task-textarea:focus { border-color:var(--color-primary); outline:none; }
 .task-textarea:disabled { opacity:.65; }
 .input-actions { display:flex; align-items:center; justify-content:space-between; margin-top:8px; }
@@ -209,6 +236,7 @@ onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
 .ex-desc  { font-size:11px; color:var(--color-text-muted); }
 .tool-chips { display:flex; flex-wrap:wrap; gap:5px; }
 .tool-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:3px 9px; background:var(--color-border-light); border:1px solid var(--color-border); border-radius:var(--radius-full); color:var(--color-text-sub); white-space:nowrap; }
+.tool-chip.unavailable { opacity:.65; text-decoration:line-through; }
 .tool-chip .el-icon { font-size:12px; }
 .execution-panel { flex:1; overflow-y:auto; padding:var(--space-lg) var(--space-xl); }
 .empty-state { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--color-text-muted); text-align:center; }
@@ -223,6 +251,7 @@ onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
 .task-index { font-size:11px; font-weight:700; color:var(--color-text-muted); font-family:var(--font-mono); }
 .task-time  { font-size:11px; color:var(--color-text-muted); }
 .task-duration { font-size:11px; color:var(--color-success); font-weight:600; }
+.task-config { margin-left:auto; font-size:10px; color:var(--color-primary); }
 .task-desc { font-size:14px; font-weight:500; color:var(--color-text); line-height:1.6; }
 .steps-list { padding:var(--space-md) var(--space-lg); display:flex; flex-direction:column; gap:8px; }
 .thinking-hint { display:flex; align-items:center; gap:10px; padding:var(--space-md) var(--space-lg); font-size:13px; color:var(--color-text-muted); }
@@ -239,7 +268,11 @@ onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })
 .config-empty { font-size:11px; color:var(--color-text-muted); }
 .config-item { padding:8px 10px; border-radius:var(--radius-md); cursor:pointer; transition:background var(--transition); margin-bottom:4px; }
 .config-item:hover { background:var(--color-border-light); }
+.config-item.selected { background:var(--color-primary-bg); box-shadow:inset 2px 0 0 var(--color-primary); }
+.config-item.inactive { opacity:.6; }
+.config-name-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .config-name { font-size:12px; font-weight:600; color:var(--color-text); }
+.config-status { font-size:9px; color:var(--color-text-muted); }
 .config-desc { font-size:10px; color:var(--color-text-muted); margin-top:2px; }
 .config-tools { display:flex; flex-wrap:wrap; gap:3px; margin-top:4px; }
 .tool-chip-sm { font-size:9px; padding:1px 5px; background:var(--color-border-light); border-radius:var(--radius-full); color:var(--color-text-sub); }

@@ -46,7 +46,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref } from 'vue'
 import { useChatStore } from '@/stores/chat.js'
 
 const chatStore  = useChatStore()
@@ -84,9 +84,9 @@ function resetHeight() {
   }
 }
 
-// 停止生成（目前靠关闭 SSE 连接来实现，这里只是 UI 状态）
+// 停止生成：中止 SSE 连接
 function stopGenerate() {
-  chatStore.loading = false
+  chatStore.stopGenerate()
 }
 </script>
 

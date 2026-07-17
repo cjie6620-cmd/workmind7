@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1'
 
 jobs:
   backend:
@@ -32,11 +35,45 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: astral-sh/setup-uv@v5
-      - run: cd server-py && uv pip install -r requirements.txt ruff mypy pytest pytest-asyncio httpx bcrypt
-      - run: cd server-py && ruff check .
-      - run: cd server-py && ruff format --check .
-      - run: cd server-py && mypy app/ --ignore-missing-imports
+        with:
+          enable-cache: true
+          # T1-05: root uv.lock is NOT server evidence; cache the Linux CPU lock instead.
+          cache-dependency-glob: |
+            server-py/requirements.linux-cpu.lock.txt
+            server-py/requirements.txt
+      - name: Assert Linux CPU lock (T1-02 / T1-05)
+        run: |
+          set -euo pipefail
+          # T1-05: repository root uv.lock must never be treated as server-py lock evidence.
+          test -f server-py/requirements.linux-cpu.lock.txt
+          if grep -qiE '^nvidia-' server-py/requirements.linux-cpu.lock.txt; then
+            echo "FAIL: nvidia-* packages found in Linux CPU lock" >&2
+            exit 1
+          fi
+          if ! grep -qiE '^torch==.*\+cpu' server-py/requirements.linux-cpu.lock.txt; then
+            echo "FAIL: torch==*+cpu missing from Linux CPU lock" >&2
+            exit 1
+          fi
+          echo "OK: Linux CPU lock present, torch+cpu, no nvidia-*"
+      - name: Create backend environment (frozen lock)
+        run: |
+          uv venv server-py/.venv --python 3.12
+          uv pip install --python server-py/.venv/bin/python \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --index-strategy unsafe-best-match \
+            -r server-py/requirements.linux-cpu.lock.txt
+          server-py/.venv/bin/python -c "import torch; print(torch.__version__)"
+      - name: Ruff lint and format
+        run: |
+          cd server-py
+          .venv/bin/ruff check app tests alembic
+          .venv/bin/ruff format --check app tests alembic
+      - name: Compile backend
+        run: server-py/.venv/bin/python -m compileall -q server-py/app
       - env:
           DEEPSEEK_API_KEY: sk-test-mock
           JWT_SECRET: test-jwt-secret-at-least-32-chars-long
@@ -46,8 +83,8 @@ jobs:
           AUTH_ENABLED: 'false'
         run: |
           cd server-py
-          uv run alembic upgrade head
-          uv run pytest -m "not live and not slow" -q
+          .venv/bin/python -m alembic upgrade head
+          .venv/bin/python -m pytest -m "not live and not slow" -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -61,3 +98,73 @@ jobs:
       - run: cd frontend && npm ci && npm run build
       - run: cd frontend && npm run test
       - run: cd frontend && npm run lint
+
+  evaluation:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: workmind_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            server-py/requirements.linux-cpu.lock.txt
+            server-py/requirements.txt
+      - name: Create evaluation environment (frozen lock)
+        run: |
+          uv venv server-py/.venv --python 3.12
+          uv pip install --python server-py/.venv/bin/python \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --index-strategy unsafe-best-match \
+            -r server-py/requirements.linux-cpu.lock.txt
+      - env:
+          DEEPSEEK_API_KEY: sk-test-mock
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/workmind_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          AUTH_ENABLED: 'false'
+        run: |
+          cd server-py
+          .venv/bin/python -m alembic upgrade head
+          .venv/bin/python -m pytest -m "evaluation and not live and not slow" -q
+
+  selenium-smoke:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Selenium deps
+        run: pip install -r e2e/selenium/requirements.txt
+      - name: Hint
+        run: |
+          echo "Selenium 全套需本地或验收环境启动 SPA+API 后执行："
+          echo "  cd e2e/selenium && E2E_BASE_URL=http://127.0.0.1:5173 pytest -q"
+          echo "本 job 仅校验依赖可安装；浏览器旅程在本地/验收机执行。"

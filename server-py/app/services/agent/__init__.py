@@ -8,4 +8,4 @@ Agent 服务模块
 
 from .agent import run_agent, get_tool_list
 
-__all__ = ['run_agent', 'get_tool_list']
+__all__ = ["run_agent", "get_tool_list"]

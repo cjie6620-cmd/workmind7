@@ -11,7 +11,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useKnowledgeStore } from '@/stores/knowledge.js'
 import DocumentUploader from '@/components/rag/DocumentUploader.vue'
 import DocumentList from '@/components/rag/DocumentList.vue'
@@ -19,6 +19,7 @@ import RagChat from '@/components/rag/RagChat.vue'
 
 const knStore = useKnowledgeStore()
 onMounted(() => { knStore.loadDocuments(); knStore.loadCategories(); knStore.initSession() })
+onUnmounted(() => { knStore.stopQuery(); knStore.stopUpload() })
 </script>
 
 <style scoped>

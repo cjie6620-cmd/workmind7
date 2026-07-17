@@ -14,17 +14,18 @@ import pytest
 # ── CI 门禁阈值（遵循 rag-evaluation.md 规范）─────────────────
 
 EVAL_THRESHOLDS = {
-    'faithfulness': {'block': 0.70, 'warn': 0.85},
-    'context_recall': {'block': 0.60, 'warn': 0.80},
-    'factual_correctness': {'block': 0.60, 'warn': 0.75},
+    "faithfulness": {"block": 0.70, "warn": 0.85},
+    "context_recall": {"block": 0.60, "warn": 0.80},
+    "factual_correctness": {"block": 0.60, "warn": 0.75},
     # Precision@4: 大多数单跳查询只有 1 个期望文档，top4 中命中 1 个 = 0.25
     # 阈值设为 0.20，即至少命中 1 个期望文档（≥1/4）
-    'precision_at_4': {'block': 0.20, 'warn': 0.50},
-    'recall_at_4': {'block': 0.60, 'warn': 0.75},
+    "precision_at_4": {"block": 0.20, "warn": 0.50},
+    "recall_at_4": {"block": 0.60, "warn": 0.75},
 }
 
 
 # ── Non-LLM 自定义指标 ────────────────────────────────────────
+
 
 def precision_at_k(retrieved_titles: List[str], expected_titles: List[str], k: int) -> float:
     """
@@ -97,15 +98,16 @@ def citation_accuracy(answer: str, expected_sources: List[str]) -> float:
 
 def _title_match(title: str, candidates: List[str]) -> bool:
     """模糊匹配标题（去除扩展名后比较）"""
-    clean = title.replace('.txt', '').replace('.md', '').strip()
+    clean = title.replace(".txt", "").replace(".md", "").strip()
     for c in candidates:
-        c_clean = c.replace('.txt', '').replace('.md', '').strip()
+        c_clean = c.replace(".txt", "").replace(".md", "").strip()
         if clean == c_clean or clean in c or c_clean in title:
             return True
     return False
 
 
 # ── Fixtures ───────────────────────────────────────────────────
+
 
 @pytest.fixture
 def eval_thresholds():
@@ -116,29 +118,30 @@ def eval_thresholds():
 @pytest.fixture
 def single_hop_queries(golden_dataset):
     """筛选单跳查询"""
-    return [q for q in golden_dataset if q['query_type'].startswith('single_hop')]
+    return [q for q in golden_dataset if q["query_type"].startswith("single_hop")]
 
 
 @pytest.fixture
 def multi_hop_queries(golden_dataset):
     """筛选多跳查询"""
-    return [q for q in golden_dataset if q['query_type'].startswith('multi_hop')]
+    return [q for q in golden_dataset if q["query_type"].startswith("multi_hop")]
 
 
 @pytest.fixture
 def edge_case_queries(golden_dataset):
     """筛选边缘用例"""
-    return [q for q in golden_dataset if q['query_type'] == 'edge_case']
+    return [q for q in golden_dataset if q["query_type"] == "edge_case"]
 
 
 # ── Live 评测 Fixtures（@pytest.mark.live 测试使用）───────────
 
+
 @pytest.fixture(scope="session")
 def check_deepseek_api_key():
     """前置检查：DEEPSEEK_API_KEY 必须是真实 key（非测试占位符）"""
-    key = os.environ.get('DEEPSEEK_API_KEY', '')
-    if not key or key.startswith('test-') or key.startswith('eval-'):
-        pytest.skip('DEEPSEEK_API_KEY 未配置或为测试占位符，跳过 live 评测')
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key or key.startswith("test-") or key.startswith("eval-"):
+        pytest.skip("DEEPSEEK_API_KEY 未配置或为测试占位符，跳过 live 评测")
 
 
 @pytest.fixture(scope="session")
@@ -153,7 +156,7 @@ def evaluator_llm(check_deepseek_api_key):
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(
-        api_key=os.environ['DEEPSEEK_API_KEY'],
+        api_key=os.environ["DEEPSEEK_API_KEY"],
         base_url="https://api.deepseek.com",
     )
     return llm_factory("deepseek-chat", provider="openai", client=client)
@@ -170,6 +173,7 @@ def ragas_metrics(evaluator_llm):
     - FactualCorrectness：回答与标准答案的事实一致性（需要 reference）
     """
     from ragas.metrics.collections import Faithfulness, ContextRecall, FactualCorrectness
+
     return [
         Faithfulness(llm=evaluator_llm),
         ContextRecall(llm=evaluator_llm),
@@ -180,7 +184,7 @@ def ragas_metrics(evaluator_llm):
 @pytest.fixture
 def eval_sample_size():
     """评测样本数，可通过 EVAL_SAMPLE_SIZE 环境变量覆盖"""
-    return int(os.environ.get('EVAL_SAMPLE_SIZE', '20'))
+    return int(os.environ.get("EVAL_SAMPLE_SIZE", "20"))
 
 
 @pytest.fixture
@@ -194,7 +198,7 @@ def sampled_golden_dataset(golden_dataset, eval_sample_size):
     random.seed(42)
     by_type = {}
     for q in golden_dataset:
-        qt = q['query_type']
+        qt = q["query_type"]
         by_type.setdefault(qt, []).append(q)
 
     total = eval_sample_size

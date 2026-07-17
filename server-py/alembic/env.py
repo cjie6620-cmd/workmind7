@@ -16,24 +16,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.core.database import Base, DB_URL
-from app.models import entities  # noqa: F401
+from app.core.database import Base, DB_URL  # noqa: E402
+from app.models import entities  # noqa: E402,F401
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-config.set_main_option('sqlalchemy.url', DB_URL)
+config.set_main_option("sqlalchemy.url", DB_URL)
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option('sqlalchemy.url')
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
-        dialect_opts={'paramstyle': 'named'},
+        dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -48,7 +48,7 @@ def do_run_migrations(connection: Connection) -> None:
 async def run_async_migrations() -> None:
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
-        prefix='sqlalchemy.',
+        prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:

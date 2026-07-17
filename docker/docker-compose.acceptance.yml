@@ -1,0 +1,21 @@
+# T2-08 验收 override：挂载宿主机已有 bge-m3，避免运行时下载。
+# 用法（仓库根目录）：
+#   docker compose --env-file server-py/.env \
+#     -f docker/docker-compose.prod.yml \
+#     -f docker/docker-compose.acceptance.yml \
+#     up -d app
+
+services:
+  app:
+    environment:
+      EMBEDDING_MODEL: /models/bge-m3
+      EMBEDDING_REQUIRED: "true"
+      EMBEDDING_DEVICE: cpu
+      # 关闭在线拉取；模型已挂载本地路径
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: ${HOST_BGE_M3_PATH:-D:/huggingface_cache/modelscope/models/Xorbits--bge-m3/snapshots/master}
+        target: /models/bge-m3
+        read_only: true

@@ -41,7 +41,7 @@ const routes = [
     path: '/erp',
     name: 'ERP',
     component: () => import('@/views/ErpView.vue'),
-    meta: { title: '报销请假', icon: '📋' },
+    meta: { title: 'ERP 审批预演（模拟）', icon: '📋' },
   },
   {
     path: '/prompt',

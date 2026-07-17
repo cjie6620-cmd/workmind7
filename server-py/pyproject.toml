@@ -1,0 +1,20 @@
+[project]
+name = "workmind7-server"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "WorkMind7 FastAPI backend"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["app", "tests", "alembic"]
+
+# 默认规则集（E4/E7/E9/F）；I/UP/B 等扩展规则另开专项收敛，避免与 format 基线耦合
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

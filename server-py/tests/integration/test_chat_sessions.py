@@ -14,7 +14,7 @@ async def app_client():
     from app.main import app
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url='http://test') as client:
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
 
@@ -22,17 +22,17 @@ async def app_client():
 @pytest.mark.asyncio
 async def test_should_delete_session_when_valid_id(app_client):
     """DELETE /api/chat/sessions/{id} 应 await clear_history"""
-    session_id = 'session_test_delete'
+    session_id = "session_test_delete"
 
     with (
-        patch('app.routes.chat.assert_session_owner', new_callable=AsyncMock),
-        patch('app.routes.chat.clear_history', new_callable=AsyncMock) as mock_clear,
+        patch("app.routes.chat.assert_session_owner", new_callable=AsyncMock),
+        patch("app.routes.chat.clear_history", new_callable=AsyncMock) as mock_clear,
     ):
-        response = await app_client.delete(f'/api/chat/sessions/{session_id}')
+        response = await app_client.delete(f"/api/chat/sessions/{session_id}")
 
     assert response.status_code == 200
-    assert response.json()['success'] is True
+    assert response.json()["success"] is True
     mock_clear.assert_awaited_once()
     args, kwargs = mock_clear.call_args
     assert args[0] == session_id
-    assert kwargs.get('user_id') == 'dev'
+    assert kwargs.get("user_id") == "dev"

@@ -10,10 +10,10 @@ from .ingest import ingest_document, get_doc_registry, delete_document, get_vect
 from .query import rag_query_stream, retrieve_docs
 
 __all__ = [
-    'ingest_document',
-    'get_doc_registry',
-    'delete_document',
-    'get_vector_store',
-    'rag_query_stream',
-    'retrieve_docs',
+    "ingest_document",
+    "get_doc_registry",
+    "delete_document",
+    "get_vector_store",
+    "rag_query_stream",
+    "retrieve_docs",
 ]

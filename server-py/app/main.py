@@ -5,7 +5,7 @@ WorkMind AI Server - Python Edition  →  Mr.Chen AI Server
 采用 lifespan 上下文管理器处理启动和关闭逻辑。
 """
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
@@ -30,131 +30,187 @@ from .auth.dependencies import get_current_user, require_admin
 async def lifespan(app: FastAPI):
     """生命周期管理：服务启动和关闭时的清理逻辑"""
     validate_config()
+    strict_startup = config["app"]["env"] == "production"
+    embedding_required = str(__import__("os").environ.get("EMBEDDING_REQUIRED", "true")).lower() in ("1", "true", "yes")
 
     # 校验数据库连接
     import sys
+
     try:
         from .core.database import async_session_factory
         from sqlalchemy import text
-        async with async_session_factory() as session:
-            await session.execute(text('SELECT 1'))
-        print('[OK] 数据库连接成功', file=sys.stderr)
-    except Exception as e:
-        print(f'[WARN] 数据库连接失败: {e}', file=sys.stderr)
-        print('[WARN] 对话历史、用户画像等功能将不可用', file=sys.stderr)
 
-    # 预加载 embeddings 模型（线程池，避免阻塞事件循环）
-    print('Pre-loading embeddings model...', file=sys.stderr)
+        async with async_session_factory() as session:
+            await session.execute(text("SELECT 1"))
+        from .core.database import check_tables_status
+
+        table_status = await check_tables_status()
+        if table_status.get("status") != "ready":
+            raise RuntimeError(table_status.get("message", "数据库表结构未就绪"))
+        print("[OK] 数据库连接成功", file=sys.stderr)
+    except Exception as e:
+        if strict_startup:
+            raise RuntimeError("生产启动失败：数据库或迁移未就绪") from e
+        print(f"[WARN] 数据库连接失败: {e}", file=sys.stderr)
+        print("[WARN] 对话历史、用户画像等功能将不可用", file=sys.stderr)
+
+    # Redis 承担预算、缓存、报告与工作流暂停快照，生产不可降级为假成功。
     try:
         import asyncio
-        from .services.model import get_embeddings
-        await asyncio.to_thread(get_embeddings)
-        print('Embeddings model loaded.', file=sys.stderr)
-    except OSError as e:
-        print(f'[WARN] Embeddings 模型预加载失败（内存不足）：{e}', file=sys.stderr)
-        print('[WARN] 知识库相关功能将在首次请求时加载，请确保系统内存充足', file=sys.stderr)
+        from .core.redis_client import get_redis
+
+        if not await asyncio.to_thread(get_redis().ping):
+            raise RuntimeError("Redis ping failed")
+        print("[OK] Redis 连接成功", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] Embeddings 模型预加载失败：{e}', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：Redis 未就绪") from e
+        print(f"[WARN] Redis 连接失败: {e}", file=sys.stderr)
+
+    # 预加载 embeddings 模型（线程池，避免阻塞事件循环）
+    if config["ai"].get("embedding_model"):
+        print("Pre-loading embeddings model...", file=sys.stderr)
+        try:
+            import asyncio
+            from .services.model import get_embeddings
+
+            await asyncio.to_thread(get_embeddings)
+            print("Embeddings model loaded.", file=sys.stderr)
+        except OSError as e:
+            if strict_startup and embedding_required:
+                raise RuntimeError("生产启动失败：Embeddings 模型无法加载") from e
+            print(f"[WARN] Embeddings 模型预加载失败（可能为内存不足/离线缓存缺失）：{e}", file=sys.stderr)
+            print("[WARN] 知识库相关功能将不可用或首次请求时才会加载，请确保模型缓存可用", file=sys.stderr)
+        except Exception as e:
+            if strict_startup and embedding_required:
+                raise RuntimeError("生产启动失败：Embeddings 模型无法加载") from e
+            print(f"[WARN] Embeddings 模型预加载失败：{e}", file=sys.stderr)
+    else:
+        print("[WARN] 未配置 EMBEDDING_MODEL，跳过 embeddings 预加载；知识库相关功能将不可用", file=sys.stderr)
 
     # 确保 pgvector 扩展（表结构由 alembic 管理）
-    print('Ensuring pgvector extension...', file=sys.stderr)
+    print("Ensuring pgvector extension...", file=sys.stderr)
     try:
         from .services.rag.pgvector_store import init_pgvector_schema
+
         await init_pgvector_schema()
-        print('pgvector extension ready.', file=sys.stderr)
+        print("pgvector extension ready.", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] pgvector 初始化失败: {e}', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：pgvector 初始化失败") from e
+        print(f"[WARN] pgvector 初始化失败: {e}", file=sys.stderr)
 
     # 加载知识库文档注册表（从数据库恢复，表不存在时不阻塞启动）
-    print('Loading document registry...', file=sys.stderr)
+    print("Loading document registry...", file=sys.stderr)
     try:
         from .services.rag.ingest import load_doc_registry
+
         await load_doc_registry()
-        print('Document registry loaded.', file=sys.stderr)
+        print("Document registry loaded.", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] 文档注册表加载失败: {e}', file=sys.stderr)
-        print('[WARN] 知识库相关功能将不可用', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：文档注册表加载失败") from e
+        print(f"[WARN] 文档注册表加载失败: {e}", file=sys.stderr)
+        print("[WARN] 知识库相关功能将不可用", file=sys.stderr)
 
     # 启动用量监控持久化后台任务
-    print('Starting monitor flush task...', file=sys.stderr)
+    print("Starting monitor flush task...", file=sys.stderr)
     try:
         await start_flush_task()
-        print('Monitor flush task started.', file=sys.stderr)
+        print("Monitor flush task started.", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] 监控持久化任务启动失败: {e}', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：监控持久化任务无法启动") from e
+        print(f"[WARN] 监控持久化任务启动失败: {e}", file=sys.stderr)
 
     # 自动填充配置种子数据（仅首次，表为空时才插入）
-    print('Seeding default configs...', file=sys.stderr)
+    print("Seeding default configs...", file=sys.stderr)
     try:
         from .services.config.config_service import seed_if_empty
         from .services.config.seed_data import PROMPT_SEEDS, AGENT_SEEDS, WORKFLOW_SEEDS
-        await seed_if_empty('prompt', PROMPT_SEEDS)
-        await seed_if_empty('agent', AGENT_SEEDS)
-        await seed_if_empty('workflow', WORKFLOW_SEEDS)
-        print('Default configs ready.', file=sys.stderr)
+
+        await seed_if_empty("prompt", PROMPT_SEEDS)
+        await seed_if_empty("agent", AGENT_SEEDS)
+        await seed_if_empty("workflow", WORKFLOW_SEEDS)
+        print("Default configs ready.", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] 配置种子数据初始化失败: {e}', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：配置种子数据初始化失败") from e
+        print(f"[WARN] 配置种子数据初始化失败: {e}", file=sys.stderr)
 
     # 加载预算配置
     try:
         from .routes.monitor import load_budget_from_db
+
         await load_budget_from_db()
-        print('Budget config loaded.', file=sys.stderr)
+        print("Budget config loaded.", file=sys.stderr)
     except Exception as e:
-        print(f'[WARN] 预算配置加载失败: {e}', file=sys.stderr)
+        if strict_startup:
+            raise RuntimeError("生产启动失败：预算配置加载失败") from e
+        print(f"[WARN] 预算配置加载失败: {e}", file=sys.stderr)
 
     # 种子用户（仅 users 表为空时）
     try:
         from .services.user_seed import ensure_seed_users
-        await ensure_seed_users()
-        print('Default users ready.', file=sys.stderr)
-    except Exception as e:
-        print(f'[WARN] 用户种子数据初始化失败: {e}', file=sys.stderr)
 
-    print(f'\nMr.Chen Server started', file=sys.stderr)
-    print(f'   URL: http://localhost:{config["app"]["port"]}', file=sys.stderr)
-    print(f'   Health: http://localhost:{config["app"]["port"]}/health\n', file=sys.stderr)
+        await ensure_seed_users()
+        print("Default users ready.", file=sys.stderr)
+    except Exception as e:
+        if strict_startup:
+            raise RuntimeError("生产启动失败：用户数据初始化失败") from e
+        print(f"[WARN] 用户种子数据初始化失败: {e}", file=sys.stderr)
+
+    print("\nMr.Chen Server started", file=sys.stderr)
+    print(f"   URL: http://localhost:{config['app']['port']}", file=sys.stderr)
+    print(f"   Health: http://localhost:{config['app']['port']}/health\n", file=sys.stderr)
     yield
+    from .routes.workflow import shutdown_workflow_tasks
+    from .routes.erp import shutdown_approval_tasks
+
+    await shutdown_workflow_tasks()
+    await shutdown_approval_tasks()
     await stop_flush_task()
     from .core.database import close_db
     from .core.redis_client import close_redis
+
     await close_db()
     close_redis()
-    logger.info('server shutdown')
+    logger.info("server shutdown")
 
 
-_is_production = config['app']['env'] == 'production'
+_is_production = config["app"]["env"] == "production"
 
 app = FastAPI(
-    title='Mr.Chen Server',
-    description='Mr.Chen AI 智能办公助手 - Python 版',
-    version='1.0.0',
+    title="Mr.Chen Server",
+    description="Mr.Chen AI 智能办公助手 - Python 版",
+    version="1.0.0",
     lifespan=lifespan,
-    docs_url=None if _is_production else '/docs',
-    redoc_url=None if _is_production else '/redoc',
-    openapi_url=None if _is_production else '/openapi.json',
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # 配置中间件（CORS、限流、请求日志、Prompt 注入检测）
 setup_middleware(app)
 
 # ── 路由注册 ───────────────────────────────────────────────────
-app.include_router(health_router, prefix='/health', tags=['health'])
-app.include_router(auth_router, prefix='/api/auth', tags=['auth'])
-app.include_router(chat_router, prefix='/api/chat', tags=['chat'], dependencies=[Depends(get_current_user)])
-app.include_router(knowledge_router, prefix='/api/knowledge', tags=['knowledge'], dependencies=[Depends(get_current_user)])
-app.include_router(agent_router, prefix='/api/agent', tags=['agent'], dependencies=[Depends(get_current_user)])
-app.include_router(workflow_router, prefix='/api/workflow', tags=['workflow'], dependencies=[Depends(get_current_user)])
-app.include_router(erp_router, prefix='/api/erp', tags=['erp'], dependencies=[Depends(get_current_user)])
-app.include_router(prompt_router, prefix='/api/prompt', tags=['prompt'], dependencies=[Depends(require_admin)])
-app.include_router(monitor_router, prefix='/api/monitor', tags=['monitor'], dependencies=[Depends(require_admin)])
-app.include_router(config_router, prefix='/api/configs', tags=['configs'], dependencies=[Depends(require_admin)])
+app.include_router(health_router, prefix="/health", tags=["health"])
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+app.include_router(chat_router, prefix="/api/chat", tags=["chat"], dependencies=[Depends(get_current_user)])
+app.include_router(
+    knowledge_router, prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(get_current_user)]
+)
+app.include_router(agent_router, prefix="/api/agent", tags=["agent"], dependencies=[Depends(get_current_user)])
+app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
+app.include_router(erp_router, prefix="/api/erp", tags=["erp"], dependencies=[Depends(get_current_user)])
+app.include_router(prompt_router, prefix="/api/prompt", tags=["prompt"], dependencies=[Depends(require_admin)])
+app.include_router(monitor_router, prefix="/api/monitor", tags=["monitor"], dependencies=[Depends(require_admin)])
+app.include_router(config_router, prefix="/api/configs", tags=["configs"], dependencies=[Depends(require_admin)])
 
 
 # 404 处理：未匹配的路由返回友好提示
-@app.api_route('/{path:path}', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def catch_all(path: str):
-    # /api 路径不应走到这里，说明路由注册有问题，返回 500 方便排查
-    if path.startswith('api/'):
-        return JSONResponse(status_code=500, content={'error': {'message': f'路由未匹配: /{path}'}})
-    return JSONResponse(status_code=404, content={'error': {'message': '接口不存在'}})
+    if path.startswith("api/"):
+        return JSONResponse(status_code=404, content={"error": {"message": f"接口不存在: /{path}"}})
+    return JSONResponse(status_code=404, content={"error": {"message": "接口不存在"}})

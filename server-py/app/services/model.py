@@ -25,35 +25,43 @@ def get_chat_model():
     global _chat_model
     if _chat_model is None:
         from .interceptor import MonitoredChatOpenAI
+
         _chat_model = MonitoredChatOpenAI(
-            model=config['ai']['primary_model'],
-            api_key=config['ai']['deepseek_key'],
-            base_url=config['ai']['base_url'],
+            model=config["ai"]["primary_model"],
+            api_key=config["ai"]["deepseek_key"],
+            base_url=config["ai"]["base_url"],
             temperature=0.7,
             streaming=True,
             stream_usage=True,
             callbacks=[],
-            timeout=30,
+            timeout=config["ai"]["timeout_seconds"],
+            max_retries=config["ai"]["max_retries"],
+            max_tokens=config["ai"]["max_tokens"],
         )
     return _chat_model
 
 
-def create_chat_model(temperature=0.7, streaming=False, callbacks=None):
+def create_chat_model(temperature=0.7, streaming=False, callbacks=None, max_tokens=None):
     """创建新的 ChatOpenAI 模型实例（带监控拦截）"""
     from .interceptor import MonitoredChatOpenAI
-    return MonitoredChatOpenAI(
-        model=config['ai']['primary_model'],
-        api_key=config['ai']['deepseek_key'],
-        base_url=config['ai']['base_url'],
-        temperature=temperature,
-        streaming=streaming,
-        stream_usage=True,
-        callbacks=callbacks or [],
-        timeout=30,
-    )
+
+    kwargs: dict = {
+        "model": config["ai"]["primary_model"],
+        "api_key": config["ai"]["deepseek_key"],
+        "base_url": config["ai"]["base_url"],
+        "temperature": temperature,
+        "streaming": streaming,
+        "stream_usage": True,
+        "callbacks": callbacks or [],
+        "timeout": config["ai"]["timeout_seconds"],
+        "max_retries": config["ai"]["max_retries"],
+    }
+    kwargs["max_tokens"] = max_tokens if max_tokens is not None else config["ai"]["max_tokens"]
+    return MonitoredChatOpenAI(**kwargs)
 
 
 # ── 本地向量化模型封装 ──────────────────────────────────────
+
 
 class _LocalEmbeddings:
     """
@@ -63,8 +71,9 @@ class _LocalEmbeddings:
     异步方法使用 asyncio.to_thread 在线程池中执行，避免阻塞 FastAPI 事件循环。
     """
 
-    def __init__(self, model_path, device='cpu'):
+    def __init__(self, model_path, device="cpu"):
         from sentence_transformers import SentenceTransformer
+
         self.model = SentenceTransformer(model_path, device=device)
 
     def embed_documents(self, texts):
@@ -88,8 +97,11 @@ def get_embeddings():
     """获取向量化模型单例（延迟加载，首次调用时初始化）"""
     global _embeddings
     if _embeddings is None:
+        model_path = config["ai"].get("embedding_model")
+        if not model_path:
+            raise RuntimeError("EMBEDDING_MODEL 未配置，无法初始化 embeddings")
         _embeddings = _LocalEmbeddings(
-            model_path=config['ai']['embedding_model'],
-            device=config['ai']['embedding_device'],
+            model_path=model_path,
+            device=config["ai"]["embedding_device"],
         )
     return _embeddings

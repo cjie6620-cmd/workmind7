@@ -98,11 +98,11 @@
 
     <!-- 提交按钮（解析完成后显示） -->
     <div v-if="erpStore.parsedForm && !erpStore.approving && !erpStore.finalResult" class="submit-area">
-      <div class="submit-hint">确认表单内容无误后，点击提交进入审批流程</div>
+      <div class="submit-hint">确认表单内容后开始 AI 审批预演；模拟结果不代表正式审批</div>
       <div class="submit-row">
         <button class="btn btn-ghost" @click="erpStore.reset()">重新填写</button>
         <button class="btn btn-primary" @click="emit('submit')">
-          提交审批
+          开始审批预演
         </button>
       </div>
     </div>

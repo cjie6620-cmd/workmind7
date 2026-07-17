@@ -1,6 +1,6 @@
 # 生产全栈 Compose
-# 启动：docker compose -f docker-compose.prod.yml up -d
-# 需先配置 .env（参考 server-py/.env.example）
+# 从仓库根目录启动：docker compose --env-file server-py/.env -f docker/docker-compose.prod.yml up -d --build
+# 需先配置 server-py/.env（参考 server-py/.env.example）
 
 name: workmind7-prod
 
@@ -13,9 +13,8 @@ services:
       POSTGRES_DB: ${WM_PG_DB:-workmind_vector}
     volumes:
       - wm_pg_data:/var/lib/postgresql/data
-      - ../sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${WM_PG_USER:-workmind}"]
+      test: ["CMD-SHELL", "pg_isready -U ${WM_PG_USER:-workmind} -d ${WM_PG_DB:-workmind_vector}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,6 +47,20 @@ services:
       REDIS_PASSWORD: ${WM_REDIS_PASSWORD:-workmind_dev}
       APP_ENV: production
       AUTH_ENABLED: "true"
+      # T2：多 worker（≥2）；与压测结论对齐后写入运维文档
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      UVICORN_TIMEOUT: ${UVICORN_TIMEOUT:-120}
+      UVICORN_GRACEFUL_TIMEOUT: ${UVICORN_GRACEFUL_TIMEOUT:-30}
+      BUDGET_ENFORCE: ${BUDGET_ENFORCE:-false}
+      DAILY_BUDGET: ${DAILY_BUDGET:-50}
+      # 容器内禁止沿用开发机本地路径；默认从 HF 缓存卷拉取 bge-m3
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_REQUIRED: ${EMBEDDING_REQUIRED:-false}
+      EMBEDDING_DEVICE: cpu
+      HF_HOME: /data/huggingface_cache
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANKER_DEVICE: cpu
     volumes:
       - wm_uploads:/app/uploads
       - wm_hf_cache:/data/huggingface_cache
@@ -56,6 +69,33 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:3001/health/ready', timeout=5).read()"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

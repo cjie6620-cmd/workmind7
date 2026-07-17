@@ -11,4 +11,9 @@ describe('renderMarkdown', () => {
     const html = renderMarkdown('**bold**')
     expect(html).toContain('<strong>bold</strong>')
   })
+
+  it('should highlight registered code languages', () => {
+    const html = renderMarkdown('```js\nconst value = true\n```')
+    expect(html).toContain('hljs-keyword')
+  })
 })

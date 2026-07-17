@@ -2,39 +2,26 @@
 向量存储单元测试
 
 测试目标：app/services/rag/pgvector_store.py
-覆盖：PGVectorStore 的 CRUD 操作和向量格式转换
+覆盖：PGVectorStore 的参数校验、绑定查询和外部事务复用
 """
+
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.rag.pgvector_store import PGVectorStore
 
 
-# ── 向量格式转换测试 ──────────────────────────────────────────
+class _AsyncContext:
+    def __init__(self, value):
+        self.value = value
 
-def test_vec_to_str_should_format_correctly():
-    """_vec_to_str 应将向量转为 PostgreSQL 格式"""
-    store = PGVectorStore()
-    vec = [1.0, 2.5, -3.0]
-    result = store._vec_to_str(vec)
-    assert result == '[1.0,2.5,-3.0]'
+    async def __aenter__(self):
+        return self.value
 
-
-def test_vec_to_str_should_handle_single_element():
-    """单个元素向量应正确转换"""
-    store = PGVectorStore()
-    result = store._vec_to_str([0.5])
-    assert result == '[0.5]'
-
-
-def test_vec_to_str_should_handle_long_vector():
-    """1024 维向量应正确转换"""
-    store = PGVectorStore(embedding_dim=1024)
-    vec = [0.1] * 1024
-    result = store._vec_to_str(vec)
-    assert result.startswith('[0.1')
-    assert result.endswith('0.1]')
-    assert result.count(',') == 1023
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_should_initialize_with_correct_dimension():
@@ -51,6 +38,7 @@ def test_should_default_to_1024_dimension():
 
 # ── Singleton 测试 ────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_get_vector_store_returns_singleton():
     """get_vector_store 应返回单例"""
@@ -61,3 +49,97 @@ async def test_get_vector_store_returns_singleton():
     store2 = await mod.get_vector_store()
     assert store1 is store2
     assert isinstance(store1, PGVectorStore)
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        [0.1, 0.2],
+        [0.1, 0.2, float("nan")],
+        [0.1, 0.2, "not-a-number"],
+    ],
+)
+def test_should_reject_invalid_vector_dimension_or_values(vector):
+    store = PGVectorStore(embedding_dim=3)
+
+    with pytest.raises(ValueError):
+        store._normalize_vector(vector)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("k", [0, 101, -1, True, 1.5])
+async def test_similarity_search_should_reject_invalid_k(k):
+    store = PGVectorStore(embedding_dim=3)
+
+    with pytest.raises(ValueError, match="k 必须"):
+        await store.similarity_search_with_score([0.1, 0.2, 0.3], k=k)
+
+
+@pytest.mark.asyncio
+async def test_similarity_search_should_bind_vector_and_filters_as_parameters():
+    store = PGVectorStore(embedding_dim=3)
+    result = MagicMock()
+    result.fetchall.return_value = []
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    doc_id = uuid.uuid4()
+
+    with patch(
+        "app.services.rag.pgvector_store.async_session_factory",
+        return_value=_AsyncContext(session),
+    ):
+        rows = await store.similarity_search_with_score(
+            [0.1, 0.2, 0.3],
+            k=4,
+            doc_id=str(doc_id),
+            category="HR",
+        )
+
+    statement, params = session.execute.await_args.args
+    sql = str(statement)
+    assert rows == []
+    assert ":query_vector" in sql
+    assert "[0.1,0.2,0.3]" not in sql
+    assert params["query_vector"] == [0.1, 0.2, 0.3]
+    assert params["doc_id"] == doc_id
+    assert params["category"] == "HR"
+    assert params["k"] == 4
+
+
+@pytest.mark.asyncio
+async def test_add_documents_should_use_external_session_without_committing():
+    store = PGVectorStore(embedding_dim=3)
+    session = MagicMock()
+    doc_id = uuid.uuid4()
+
+    await store.add_documents(
+        [
+            {
+                "doc_id": str(doc_id),
+                "chunk_index": 0,
+                "content": "content",
+                "embedding": [0.1, 0.2, 0.3],
+                "metadata": {"category": "HR"},
+            }
+        ],
+        session=session,
+    )
+
+    chunks = session.add_all.call_args.args[0]
+    assert len(chunks) == 1
+    assert chunks[0].doc_id == doc_id
+    assert list(chunks[0].embedding) == [0.1, 0.2, 0.3]
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_should_use_external_session_without_committing():
+    store = PGVectorStore(embedding_dim=3)
+    session = MagicMock()
+    session.execute = AsyncMock()
+    doc_id = uuid.uuid4()
+
+    await store.delete_by_doc_id(str(doc_id), session=session)
+
+    session.execute.assert_awaited_once()
+    session.commit.assert_not_called()

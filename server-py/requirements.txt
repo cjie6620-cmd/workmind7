@@ -3,14 +3,18 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.0
 pydantic-settings>=2.0
 python-dotenv>=1.0.0
+# Windows 与精简容器可能不提供系统 IANA 时区数据库
+tzdata>=2025.2
 langchain-core>=0.3.0
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-openai>=0.3.0
 langchain-huggingface>=0.1.0
 sentence-transformers>=2.6.0
-# Windows 上 torch 2.13 可能 DLL 加载失败，固定 2.5.1；安装后若 import torch 失败，执行：
-# uv pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu --force-reinstall
+# Windows 本地可装默认 torch；Linux Docker/CI 必须用 requirements.linux-cpu.lock.txt（torch==2.5.1+cpu，无 nvidia-*）。
+# 重新生成 Linux CPU 锁（在 Linux 容器或 CI runner 上执行）：
+#   bash scripts/regenerate_linux_cpu_lock.sh
+# 禁止用仓库根目录 uv.lock 作为服务端锁定证据（T1-05）。
 torch==2.5.1
 langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
@@ -41,3 +45,6 @@ pytest-mock>=3.14
 ragas>=0.4.3
 httpx>=0.27
 faker>=25.0
+# 静态检查 / 格式化
+ruff>=0.9.0
+mypy>=1.14.0

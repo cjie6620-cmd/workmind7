@@ -14,6 +14,6 @@ def sse_error(err) -> JSONServerSentEvent:
     """构造 SSE 错误事件"""
     app_err = classify_error(err)
     return JSONServerSentEvent(
-        event='error',
-        data={'message': app_err.user_message, 'retryable': app_err.retryable},
+        event="error",
+        data={"message": app_err.user_message, "retryable": app_err.retryable},
     )

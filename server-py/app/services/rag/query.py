@@ -29,7 +29,7 @@ RAG_SYSTEM = """你是 Mr.Chen AI 知识库助手。
 4. 在回答末尾用 【来源：文档名】 标注使用了哪些文档"""
 
 
-async def retrieve_docs(question, category=None, k=None):
+async def retrieve_docs(question, category=None, k=None, *, owner_user_id=None, is_admin=False):
     """
     混合检索 + 精排
 
@@ -37,39 +37,60 @@ async def retrieve_docs(question, category=None, k=None):
     - question: 查询问题
     - category: 可选，按文档分类筛选
     - k: 返回结果数量（默认从配置读取）
+    - owner_user_id / is_admin: 按上传者隔离检索结果
 
     返回：精排后的文档列表（按 rerank_score 降序）
     """
-    rag_config = config['rag']
+    from .ingest import doc_visible_to_user
+
+    rag_config = config["rag"]
     if k is None:
-        k = rag_config['final_k']
+        k = rag_config["final_k"]
 
     # ① 混合检索（BM25 + 向量 + RRF 融合）
     retriever = await get_hybrid_retriever(category)
     candidates = await retriever.ainvoke(question)
 
+    # 第二步：在精排前按文档所有者过滤，避免跨用户内容进入上下文
+    if not is_admin and owner_user_id is not None:
+        candidates = [
+            doc
+            for doc in candidates
+            if doc_visible_to_user(doc.metadata.get("ownerUserId"), user_id=owner_user_id, is_admin=False)
+        ]
+
     if not candidates:
-        logger.info('rag: no candidates from hybrid retrieval', {
-            'question': question[:40],
-        })
+        logger.info(
+            "rag: no candidates from hybrid retrieval",
+            {
+                "question": question[:40],
+            },
+        )
         return []
 
-    logger.info('rag: hybrid retrieval done', {
-        'question': question[:40],
-        'candidates': len(candidates),
-    })
+    logger.info(
+        "rag: hybrid retrieval done",
+        {
+            "question": question[:40],
+            "candidates": len(candidates),
+        },
+    )
 
     # ② CrossEncoder 精排（线程池执行，避免阻塞事件循环）
     import asyncio
+
     reranker = get_reranker()
     ranked = await asyncio.to_thread(reranker.rerank, question, candidates, top_n=k)
 
-    logger.info('rag: retrieval complete', {
-        'question': question[:40],
-        'candidates': len(candidates),
-        'results': len(ranked),
-        'topScore': f'{ranked[0]["rerank_score"]:.4f}' if ranked else 'N/A',
-    })
+    logger.info(
+        "rag: retrieval complete",
+        {
+            "question": question[:40],
+            "candidates": len(candidates),
+            "results": len(ranked),
+            "topScore": f"{ranked[0]['rerank_score']:.4f}" if ranked else "N/A",
+        },
+    )
 
     return ranked
 
@@ -85,30 +106,34 @@ async def rag_query_stream(question, options=None):
     SSE 事件由路由层处理
     """
     options = options or {}
-    docs = await retrieve_docs(question, category=options.get('category'))
+    docs = await retrieve_docs(
+        question,
+        category=options.get("category"),
+        owner_user_id=options.get("owner_user_id"),
+        is_admin=bool(options.get("is_admin")),
+    )
 
     async def stream_answer():
         """流式生成回答"""
         if not docs:
-            yield '知识库中未找到与该问题相关的内容。\n请尝试换一种提问方式，或上传相关文档后再试。'
+            yield "知识库中未找到与该问题相关的内容。\n请尝试换一种提问方式，或上传相关文档后再试。"
             return
 
         # 构建上下文
-        context = '\n\n---\n\n'.join(
-            f'[参考{i + 1}] 来源：{d["title"]}\n{d["content"]}'
-            for i, d in enumerate(docs)
-        )
+        context = "\n\n---\n\n".join(f"[参考{i + 1}] 来源：{d['title']}\n{d['content']}" for i, d in enumerate(docs))
 
         # 构建 Prompt
-        prompt = ChatPromptTemplate.from_messages([
-            ('system', RAG_SYSTEM),
-            ('human', '参考文档：\n{context}\n\n问题：{question}'),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", RAG_SYSTEM),
+                ("human", "参考文档：\n{context}\n\n问题：{question}"),
+            ]
+        )
 
         # 执行链
         chain = prompt | get_chat_model()
-        async for chunk in chain.astream({'context': context, 'question': question}):
+        async for chunk in chain.astream({"context": context, "question": question}):
             if chunk.content:
                 yield chunk.content
 
-    return {'sources': docs, 'stream_answer': stream_answer}
+    return {"sources": docs, "stream_answer": stream_answer}

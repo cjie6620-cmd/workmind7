@@ -22,14 +22,14 @@
       <div class="user-info">
         <div class="user-avatar">{{ avatarLetter }}</div>
         <span class="user-name">{{ displayName }}</span>
-        <el-button size="small" text type="primary" @click="handleLogout">登出</el-button>
+        <el-button size="small" text type="primary" data-testid="logout-btn" @click="handleLogout">登出</el-button>
       </div>
     </div>
   </header>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMonitorStore } from '@/stores/monitor.js'
 import { useAuthStore } from '@/stores/auth.js'
@@ -42,9 +42,9 @@ const authStore = useAuthStore()
 const displayName = computed(() => authStore.user?.username || 'Mr.Chen')
 const avatarLetter = computed(() => (displayName.value[0] || 'U').toUpperCase())
 
-function handleLogout() {
-  authStore.logout()
-  router.push('/login')
+async function handleLogout() {
+  await authStore.logout()
+  await router.push('/login')
 }
 
 // 各页面的标题和描述（icon 使用 Element Plus 图标名）
@@ -53,7 +53,7 @@ const pageMeta = {
   '/knowledge': { title: '知识库问答',     icon: 'Reading',      desc: '上传文档，基于内容精准回答' },
   '/agent':     { title: '任务执行 Agent', icon: 'Cpu',          desc: '复杂任务自动拆解，工具调用可视化' },
   '/workflow':  { title: '内容生成工作流', icon: 'Operation',    desc: '周报、纪要、邮件、PRD 一键生成' },
-  '/erp':       { title: 'ERP 报销与请假', icon: 'Tickets',      desc: '智能填单，AI 模拟审批流程' },
+  '/erp':       { title: 'ERP 审批预演（模拟）', icon: 'Tickets', desc: '智能填单与 AI 预审，不代表正式审批' },
   '/prompt':    { title: 'Prompt 调试工具', icon: 'EditPen',     desc: 'A/B 测试，版本管理，效果对比' },
   '/monitor':   { title: '用量与成本看板', icon: 'DataAnalysis', desc: 'Token 消耗、费用、缓存命中率' },
 }
@@ -64,7 +64,15 @@ const currentMeta = computed(() => {
 })
 
 // 预算预警（超过日预算80%时显示）
-const budgetAlert = computed(() => monitorStore.budgetWarning)
+const budgetAlert = computed(() => authStore.isAdmin ? monitorStore.budgetWarning : null)
+let monitorTimer = null
+
+onMounted(() => {
+  if (!authStore.isAdmin) return
+  monitorStore.loadStats()
+  monitorTimer = setInterval(() => monitorStore.loadStats(), 30000)
+})
+onUnmounted(() => clearInterval(monitorTimer))
 </script>
 
 <style scoped>

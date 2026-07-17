@@ -29,9 +29,8 @@
           <button class="action-btn" @click="copy" title="复制">
             {{ copied ? '✓ 已复制' : '复制' }}
           </button>
-          <button class="action-btn" @click="emit('regenerate')" title="重新生成">重新生成</button>
-          <button class="action-btn like" :class="{ active: liked }" @click="like" title="有帮助">赞</button>
-          <button class="action-btn dislike" :class="{ active: disliked }" @click="dislike" title="没帮助">踩</button>
+          <button v-if="message.persisted !== false" class="action-btn like" :class="{ active: liked }" :disabled="feedbackSaving" @click="rate('helpful')" title="有帮助">赞</button>
+          <button v-if="message.persisted !== false" class="action-btn dislike" :class="{ active: disliked }" :disabled="feedbackSaving" @click="rate('unhelpful')" title="没帮助">踩</button>
         </div>
       </div>
     </div>
@@ -40,7 +39,6 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import 'highlight.js/styles/github-dark.css'
 import { useChatStore } from '@/stores/chat.js'
 import { renderMarkdown } from '@/utils/markdown.js'
 
@@ -48,12 +46,11 @@ const props = defineProps({
   message: { type: Object, required: true },
 })
 
-const emit = defineEmits(['regenerate'])
-
 const chatStore = useChatStore()
 const copied    = ref(false)
-const liked     = ref(false)
-const disliked  = ref(false)
+const feedbackSaving = ref(false)
+const liked = computed(() => props.message.rating === 'helpful')
+const disliked = computed(() => props.message.rating === 'unhelpful')
 
 // 把 Markdown 文本转成安全 HTML
 const renderedContent = computed(() => renderMarkdown(props.message.content))
@@ -64,14 +61,14 @@ async function copy() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
-function like() {
-  liked.value = !liked.value
-  disliked.value = false
-}
-
-function dislike() {
-  disliked.value = !disliked.value
-  liked.value = false
+async function rate(rating) {
+  if (feedbackSaving.value || props.message.rating === rating) return
+  feedbackSaving.value = true
+  try {
+    await chatStore.submitFeedback(props.message, rating)
+  } finally {
+    feedbackSaving.value = false
+  }
 }
 </script>
 
@@ -183,6 +180,7 @@ function dislike() {
 }
 .action-btn:hover { background: var(--color-border); color: var(--color-text); }
 .action-btn.active { background: var(--color-primary-bg); color: var(--color-primary); border-color: var(--color-primary); }
+.action-btn:disabled { opacity:.5; cursor:wait; }
 
 /* 打字机光标 */
 .cursor-blink {

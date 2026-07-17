@@ -10,9 +10,8 @@ from .parser import parse_expense_form, parse_leave_form
 from .approval import run_approval_flow, APPROVAL_ROLES
 
 __all__ = [
-    'parse_expense_form',
-    'parse_leave_form',
-
-    'run_approval_flow',
-    'APPROVAL_ROLES',
+    "parse_expense_form",
+    "parse_leave_form",
+    "run_approval_flow",
+    "APPROVAL_ROLES",
 ]

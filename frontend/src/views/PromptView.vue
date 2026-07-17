@@ -145,8 +145,8 @@
               <input v-model="editing.name" class="input tpl-name-input" placeholder="模板名称" />
               <div class="tpl-edit-actions">
                 <button class="btn btn-ghost btn-sm" @click="loadToTest">加载到测试</button>
-                <button class="btn btn-ghost btn-sm" @click="doDelete" :disabled="editing.id?.startsWith('t_default_')">删除</button>
-                <button class="btn btn-primary btn-sm" @click="doSave">保存</button>
+                <button class="btn btn-ghost btn-sm" @click="doDelete" :disabled="editing.id?.startsWith('t_default_') || ps.deleting || ps.saving">删除</button>
+                <button class="btn btn-primary btn-sm" @click="doSave" :disabled="ps.saving || ps.deleting">{{ ps.saving ? '保存中...' : '保存' }}</button>
               </div>
             </div>
             <label class="field-label">System Prompt</label>
@@ -170,7 +170,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { usePromptStore } from '@/stores/prompt.js'
 import { useAppStore } from '@/stores/app.js'
 import { renderMarkdown } from '@/utils/markdown.js'
@@ -211,16 +211,17 @@ function startNew() { selectedId.value = ''; editing.value = { name:'', systemPr
 async function doSave() {
   if (!editing.value.name?.trim() || !editing.value.systemPrompt?.trim()) { appStore.toast.warning('名称和内容不能为空'); return }
   ps.editingId = selectedId.value || ''
-  await ps.saveTemplate({ name: editing.value.name, systemPrompt: editing.value.systemPrompt, description: editing.value.description })
-  editing.value = null; selectedId.value = ''
+  const saved = await ps.saveTemplate({ name: editing.value.name, systemPrompt: editing.value.systemPrompt, description: editing.value.description })
+  if (saved) { editing.value = null; selectedId.value = '' }
 }
 async function doDelete() {
   if (!confirm(`确定删除「${editing.value.name}」？`)) return
-  await ps.deleteTemplate(editing.value.id)
-  editing.value = null; selectedId.value = ''
+  const deleted = await ps.deleteTemplate(editing.value.id)
+  if (deleted) { editing.value = null; selectedId.value = '' }
 }
 function loadToTest() { ps.applyTemplate(editing.value); activeTab.value = 'test' }
 onMounted(() => ps.loadTemplates())
+onUnmounted(() => ps.stopStreams())
 </script>
 
 <style scoped>

@@ -3,6 +3,7 @@
 import axios from 'axios'
 import { useAppStore } from '@/stores/app.js'
 import { useAuthStore } from '@/stores/auth.js'
+import { createSseParser } from '@/utils/sse.js'
 
 const http = axios.create({
   baseURL: '/api',
@@ -18,6 +19,13 @@ function processQueue(error, token = null) {
     else resolve(token)
   })
   refreshQueue = []
+}
+
+function expireSession(authStore) {
+  // 认证失效可能发生在手动登出的远端清理请求中。此处不能 await logout，
+  // 否则会等待正在进行的同一个 logoutPromise，形成自等待。
+  void authStore.logout({ remoteCleanup: false }).catch(() => {})
+  if (window.location.pathname !== '/login') window.location.assign('/login')
 }
 
 // ── 请求拦截器 ─────────────────────────────────────────────────
@@ -41,35 +49,40 @@ http.interceptors.response.use(
     const authStore = useAuthStore()
     const originalRequest = error.config
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (axios.isCancel(error) || error.code === 'ERR_CANCELED') {
+      return Promise.reject(error)
+    }
+
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       if (originalRequest.url?.includes('/auth/refresh') || originalRequest.url?.includes('/auth/login')) {
-        authStore.logout()
-        window.location.href = '/login'
+        expireSession(authStore)
         return Promise.reject(error)
       }
 
+      // 排队请求也只能重试一次；否则刷新后的 token 仍无效时会再次刷新。
+      originalRequest._retry = true
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           refreshQueue.push({ resolve, reject })
         }).then((token) => {
+          originalRequest.headers ||= {}
           originalRequest.headers.Authorization = `Bearer ${token}`
           return http(originalRequest)
         })
       }
 
-      originalRequest._retry = true
       isRefreshing = true
 
       try {
         await authStore.refresh()
         const newToken = authStore.getAccessToken()
         processQueue(null, newToken)
+        originalRequest.headers ||= {}
         originalRequest.headers.Authorization = `Bearer ${newToken}`
         return http(originalRequest)
       } catch (refreshError) {
         processQueue(refreshError, null)
-        authStore.logout()
-        window.location.href = '/login'
+        expireSession(authStore)
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false
@@ -88,7 +101,7 @@ http.interceptors.response.use(
         appStore.toast.warning('今日预算已用尽，请联系管理员')
       } else if (status >= 500) {
         appStore.toast.error('服务器异常，请稍后重试')
-      } else if (status !== 401) {
+      } else if (status !== 401 && !error.config?.silent) {
         appStore.toast.error(msg)
       }
     } else {
@@ -102,17 +115,21 @@ http.interceptors.response.use(
 // ── SSE 流式请求工具 ───────────────────────────────────────────
 export async function fetchStream(url, body, { onToken, onEvent, onDone, onError, signal } = {}) {
   const authStore = useAuthStore()
-  const token = authStore.getAccessToken()
+  const fetchUrl = import.meta.env.DEV
+    ? url.replace('/api', 'http://localhost:3001/api')
+    : url
 
-  try {
-    const fetchUrl = import.meta.env.DEV
-      ? url.replace('/api', 'http://localhost:3001/api')
-      : url
+  let terminal = 'pending'
+  let terminalData = null
+  let streamError = null
+  let reader = null
 
+  const isAborted = (err) => signal?.aborted || err?.name === 'AbortError'
+
+  async function openResponse(attempt = 0) {
     const headers = { 'Content-Type': 'application/json' }
-    if (token) {
-      headers.Authorization = `Bearer ${token}`
-    }
+    const token = authStore.getAccessToken()
+    if (token) headers.Authorization = `Bearer ${token}`
 
     const response = await fetch(fetchUrl, {
       method: 'POST',
@@ -121,101 +138,88 @@ export async function fetchStream(url, body, { onToken, onEvent, onDone, onError
       signal,
     })
 
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}))
-      if (response.status === 401) {
+    if (response.status === 401) {
+      if (attempt === 0) {
         try {
           await authStore.refresh()
-          return fetchStream(url, body, { onToken, onEvent, onDone, onError, signal })
+          return openResponse(1)
         } catch {
-          authStore.logout()
-          window.location.href = '/login'
-          return
+          // 下面统一执行登出和错误回调。
         }
       }
-      throw new Error(data.error?.message || data.detail?.error?.message || `HTTP ${response.status}`)
+
+      await authStore.logout({ remoteCleanup: false })
+      if (window.location.pathname !== '/login') window.location.assign('/login')
+      const authError = new Error('登录已过期，请重新登录')
+      authError.status = 401
+      throw authError
     }
 
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      const requestError = new Error(
+        data.error?.message || data.detail?.error?.message || `HTTP ${response.status}`,
+      )
+      requestError.status = response.status
+      throw requestError
+    }
 
-    while (true) {
-      if (signal?.aborted) {
-        reader.cancel()
+    if (!response.body) throw new Error('服务端未返回流式响应体')
+    return response
+  }
+
+  function dispatch(event, data) {
+    if (terminal !== 'pending') return
+
+    if (event === 'done') {
+      terminal = 'done'
+      terminalData = data
+      onDone?.(data)
+      return
+    }
+
+    if (event === 'error') {
+      terminal = 'error'
+      streamError = new Error(data.message || data.error?.message || '流式请求出错')
+      return
+    }
+
+    if (event === 'token') onToken?.(data.token || '')
+    else onEvent?.(event, data)
+  }
+
+  try {
+    if (signal?.aborted) return { status: 'aborted' }
+
+    const response = await openResponse()
+    reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    const parser = createSseParser(dispatch)
+
+    while (terminal === 'pending') {
+      const { value, done } = await reader.read()
+      if (done) {
+        parser.push(decoder.decode())
+        parser.finish()
         break
       }
-
-      const { value, done } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const normalized = buffer.replace(/\r\n/g, '\n')
-      const parts = normalized.split('\n\n')
-      buffer = parts.pop() ?? ''
-
-      for (const part of parts) {
-        if (!part.trim()) continue
-
-        const lines = part.split('\n')
-        let event = 'message'
-        const dataLines = []
-
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            event = line.slice(7).trim()
-          } else if (line.startsWith('data: ')) {
-            dataLines.push(line.slice(6))
-          }
-        }
-
-        const dataStr = dataLines.join('\n')
-        if (!dataStr) continue
-
-        let data
-        try { data = JSON.parse(dataStr) } catch { continue }
-
-        if (event === 'token' && onToken) {
-          onToken(data.token || '')
-        } else if (event === 'done' && onDone) {
-          onDone(data)
-        } else if (event === 'error') {
-          onError?.(new Error(data.message || '流式请求出错'))
-          return
-        } else if (onEvent) {
-          onEvent(event, data)
-        }
-      }
+      parser.push(decoder.decode(value, { stream: true }))
     }
 
-    if (buffer.trim()) {
-      const normalized = buffer.replace(/\r\n/g, '\n')
-      const lines = normalized.split('\n')
-      let event = 'message'
-      const dataLines = []
+    if (terminal !== 'pending') await reader.cancel().catch(() => {})
+    if (terminal === 'error') throw streamError
+    if (terminal === 'done') return { status: 'done', data: terminalData }
+    if (signal?.aborted) return { status: 'aborted' }
 
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          event = line.slice(7).trim()
-        } else if (line.startsWith('data: ')) {
-          dataLines.push(line.slice(6))
-        }
-      }
-
-      const dataStr = dataLines.join('\n')
-      if (dataStr) {
-        try {
-          const data = JSON.parse(dataStr)
-          if (event === 'token' && onToken) onToken(data.token || '')
-          else if (event === 'done' && onDone) onDone(data)
-          else if (event === 'error') onError?.(new Error(data.message || '流式请求出错'))
-          else if (onEvent) onEvent(event, data)
-        } catch { /* ignore */ }
-      }
-    }
+    throw new Error('流式连接在完成事件前已断开，请重试')
   } catch (err) {
-    if (err.name === 'AbortError') return
+    if (isAborted(err)) return { status: 'aborted' }
+    terminal = 'error'
+    streamError = err
     onError?.(err)
+    return { status: 'error', error: err }
+  } finally {
+    if (reader) await reader.cancel().catch(() => {})
   }
 }
 

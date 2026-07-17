@@ -11,21 +11,32 @@
 
 import asyncio
 import time
+import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.sse import EventSourceResponse
 
 from ..auth.dependencies import get_current_user
 from ..auth.models import UserContext
+from ..config import config
 from ..services.model import get_chat_model
-from ..services.cache import cache
+from ..services.cache import build_cache_context, cache
 from ..services.chat.memory import (
-    get_history_db, trim_history, clear_history,
-    get_profile, get_profile_camel, profile_to_context, fire_and_forget_profile,
-    list_sessions, save_message,
+    get_history_db,
+    trim_history,
+    clear_history,
+    get_profile,
+    get_profile_camel,
+    profile_to_context,
+    fire_and_forget_profile,
+    clear_profile,
+    list_sessions,
+    save_message,
+    set_message_feedback,
 )
+from ..schemas.requests import ChatFeedbackRequest
 from ..middleware import ChatRequest, check_injection
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
@@ -34,14 +45,14 @@ from ..utils.session_guard import assert_session_owner, normalize_chat_session_i
 chat_router = APIRouter()
 
 ROLES = {
-    'default': '你是 Mr.Chen AI，一个智能办公助手，回答简洁专业。',
-    'tech': '你是资深技术顾问，精通 Vue3、React、Node.js 等前端技术栈。回答要有代码示例，说明清楚原理。',
-    'hr': '你是 HR 助理，熟悉劳动法规、公司政策、绩效管理、招聘流程。回答要有温度，兼顾政策合规和员工关怀。',
-    'legal': '你是法务助理，熟悉合同法、知识产权、劳动合同。回答要严谨，必要时建议咨询专业律师。',
+    "default": "你是 Mr.Chen AI，一个智能办公助手，回答简洁专业。",
+    "tech": "你是资深技术顾问，精通 Vue3、React、Node.js 等前端技术栈。回答要有代码示例，说明清楚原理。",
+    "hr": "你是 HR 助理，熟悉劳动法规、公司政策、绩效管理、招聘流程。回答要有温度，兼顾政策合规和员工关怀。",
+    "legal": "你是法务助理，熟悉合同法、知识产权、劳动合同。回答要严谨，必要时建议咨询专业律师。",
 }
 
 
-@chat_router.post('/stream')
+@chat_router.post("/stream")
 async def chat_stream(
     req: ChatRequest,
     request: Request,
@@ -54,126 +65,229 @@ async def chat_stream(
     user_id = user.user_id
 
     if check_injection(message):
-        return JSONResponse(status_code=400, content={'error': {'message': '输入内容不符合使用规范'}})
+        return JSONResponse(status_code=400, content={"error": {"message": "输入内容不符合使用规范"}})
 
     await assert_session_owner(session_id, user_id)
 
     async def event_generator():
         try:
-            base_system = ROLES.get(role, ROLES['default'])
+            base_system = ROLES.get(role, ROLES["default"])
             profile = await get_profile(user_id)
             profile_ctx = profile_to_context(profile)
             system_prompt = base_system + profile_ctx
-
-            cached = cache.get(system_prompt, message)
-            if cached:
-                logger.info('cache hit', {'sessionId': session_id, 'msg': message[:30]})
-                yield sse_event('cache_hit', {})
-                content = cached['content']
-                for i in range(0, len(content), 3):
-                    yield sse_event('token', {'token': content[i:i + 3]})
-                    await asyncio.sleep(0.006)
-                yield sse_event('done', {'fromCache': True})
-                return
-
             raw_history = await get_history_db(session_id)
-            history_msgs = [{'role': msg['role'], 'content': msg['content']} for msg in raw_history]
+            history_msgs = [{"role": msg["role"], "content": msg["content"]} for msg in raw_history]
             trimmed = trim_history(history_msgs, 2000)
-            messages = [SystemMessage(system_prompt), *trimmed, HumanMessage(message)]
-
-            yield sse_event('start', {'sessionId': session_id})
-
-            full_reply = ''
-            input_tokens = 0
-            output_tokens = 0
-
-            async for chunk in get_chat_model().astream(messages):
-                if await request.is_disconnected():
-                    break
-                if chunk.content:
-                    full_reply += chunk.content
-                    yield sse_event('token', {'token': chunk.content})
-                if chunk.usage_metadata:
-                    input_tokens = chunk.usage_metadata.get('input_tokens', 0) or 0
-                    output_tokens = chunk.usage_metadata.get('output_tokens', 0) or 0
-
-            if await request.is_disconnected():
-                return
-
-            await save_message(session_id, 'user', message, user_id=user_id)
-            await save_message(
-                session_id, 'assistant', full_reply,
-                model='deepseek-chat', tokens=output_tokens, user_id=user_id,
+            model_name = config["ai"]["primary_model"]
+            cache_context = build_cache_context(
+                user_id=user_id,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                message=message,
+                history=trimmed,
+                model_context={"name": model_name, "temperature": 0.7},
             )
 
-            cache.set(system_prompt, message, {
-                'content': full_reply,
-                'tokens': input_tokens + output_tokens,
-            })
+            cached = cache.get(cache_context)
+            if cached:
+                logger.info("cache hit", {"sessionId": session_id, "msg": message[:30]})
+                await save_message(session_id, "user", message, user_id=user_id)
+                yield sse_event("cache_hit", {})
+                content = cached["content"]
+                delivered = ""
+                for i in range(0, len(content), 3):
+                    if await request.is_disconnected():
+                        if delivered:
+                            await save_message(
+                                session_id,
+                                "assistant",
+                                delivered,
+                                model=model_name,
+                                metadata={"fromCache": True, "incomplete": True},
+                                user_id=user_id,
+                            )
+                        return
+                    token = content[i : i + 3]
+                    delivered += token
+                    yield sse_event("token", {"token": token})
+                    await asyncio.sleep(0.006)
+
+                assistant_message_id = await save_message(
+                    session_id,
+                    "assistant",
+                    content,
+                    model=model_name,
+                    metadata={"fromCache": True},
+                    user_id=user_id,
+                )
+                fire_and_forget_profile(user_id, message, content)
+                yield sse_event(
+                    "done",
+                    {
+                        "sessionId": session_id,
+                        "assistantMessageId": assistant_message_id,
+                        "fromCache": True,
+                    },
+                )
+                return
+
+            messages = [SystemMessage(system_prompt), *trimmed, HumanMessage(message)]
+
+            # 用户消息在模型调用前落库；Provider 失败或用户停止时也不会丢失输入。
+            await save_message(session_id, "user", message, user_id=user_id)
+            yield sse_event("start", {"sessionId": session_id})
+
+            full_reply = ""
+            input_tokens = 0
+            output_tokens = 0
+            disconnected = False
+
+            try:
+                async for chunk in get_chat_model().astream(messages):
+                    if await request.is_disconnected():
+                        disconnected = True
+                        break
+                    if chunk.content:
+                        full_reply += chunk.content
+                        yield sse_event("token", {"token": chunk.content})
+                    if chunk.usage_metadata:
+                        input_tokens = chunk.usage_metadata.get("input_tokens", 0) or 0
+                        output_tokens = chunk.usage_metadata.get("output_tokens", 0) or 0
+            except Exception:
+                if full_reply:
+                    await save_message(
+                        session_id,
+                        "assistant",
+                        full_reply,
+                        model=model_name,
+                        tokens=output_tokens,
+                        metadata={"incomplete": True, "reason": "provider_error"},
+                        user_id=user_id,
+                    )
+                raise
+
+            if disconnected or await request.is_disconnected():
+                if full_reply:
+                    await save_message(
+                        session_id,
+                        "assistant",
+                        full_reply,
+                        model=model_name,
+                        tokens=output_tokens,
+                        metadata={"incomplete": True, "reason": "client_stopped"},
+                        user_id=user_id,
+                    )
+                return
+
+            assistant_message_id = await save_message(
+                session_id,
+                "assistant",
+                full_reply,
+                model=model_name,
+                tokens=output_tokens,
+                user_id=user_id,
+            )
+
+            cache.set(
+                cache_context,
+                {
+                    "content": full_reply,
+                    "tokens": input_tokens + output_tokens,
+                },
+            )
 
             fire_and_forget_profile(user_id, message, full_reply)
 
-            yield sse_event('done', {'fromCache': False, 'inputTokens': input_tokens, 'outputTokens': output_tokens})
-            logger.info('chat done', {
-                'sessionId': session_id,
-                'inputTokens': input_tokens,
-                'outputTokens': output_tokens,
-                'replyLen': len(full_reply),
-            })
+            yield sse_event(
+                "done",
+                {
+                    "sessionId": session_id,
+                    "assistantMessageId": assistant_message_id,
+                    "fromCache": False,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                },
+            )
+            logger.info(
+                "chat done",
+                {
+                    "sessionId": session_id,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "replyLen": len(full_reply),
+                },
+            )
         except Exception as err:
-            logger.error('chat error', {'error': str(err)})
+            logger.error("chat error", {"error": str(err)})
             yield sse_error(err)
 
     return EventSourceResponse(event_generator())
 
 
-@chat_router.get('/sessions')
+@chat_router.get("/sessions")
 async def get_sessions(user: UserContext = Depends(get_current_user)):
     """获取当前用户的会话列表"""
     sessions = await list_sessions(user_id=user.user_id)
-    return {'sessions': sessions}
+    return {"sessions": sessions}
 
 
-@chat_router.post('/sessions')
+@chat_router.post("/sessions")
 async def create_session(user: UserContext = Depends(get_current_user)):
     """创建新会话"""
-    session_id = f'session_{user.user_id}_{int(time.time() * 1000)}'
-    return {'id': session_id, 'title': '新对话', 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ')}
+    session_id = f"session_{user.user_id}_{uuid.uuid4().hex}"
+    return {"id": session_id, "title": "新对话", "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
-@chat_router.get('/history/{session_id}')
+@chat_router.get("/history/{session_id}")
 async def get_history_endpoint(session_id: str, user: UserContext = Depends(get_current_user)):
     """获取指定会话的历史消息"""
     await assert_session_owner(session_id, user.user_id)
-    try:
-        messages = await get_history_db(session_id)
-    except Exception:
-        messages = []
-    return {'messages': messages}
+    messages = await get_history_db(session_id)
+    return {"messages": messages}
 
 
-@chat_router.delete('/sessions/{session_id}')
+@chat_router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, user: UserContext = Depends(get_current_user)):
     """删除指定会话"""
     await assert_session_owner(session_id, user.user_id)
     await clear_history(session_id, user_id=user.user_id)
-    return {'success': True}
+    return {"success": True}
 
 
-@chat_router.get('/profile')
+@chat_router.get("/profile")
 async def get_user_profile(user: UserContext = Depends(get_current_user)):
     """获取当前用户画像"""
     return await get_profile_camel(user.user_id)
 
 
-@chat_router.get('/roles')
+@chat_router.delete("/profile")
+async def delete_user_profile(user: UserContext = Depends(get_current_user)):
+    """永久清除当前用户画像。"""
+    await clear_profile(user.user_id)
+    return {"success": True}
+
+
+@chat_router.post("/messages/{message_id}/feedback")
+async def save_chat_feedback(
+    message_id: str,
+    req: ChatFeedbackRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """记录当前用户对助手回答的有用/无用反馈。"""
+    updated = await set_message_feedback(message_id, user.user_id, req.rating)
+    if not updated:
+        return JSONResponse(status_code=404, content={"error": {"message": "消息不存在"}})
+    return {"success": True, "rating": req.rating}
+
+
+@chat_router.get("/roles")
 async def get_roles():
     """获取内置角色列表"""
     return {
-        'roles': [
-            {'id': 'default', 'label': '通用助手', 'icon': '🤖', 'desc': '日常问答、通用任务'},
-            {'id': 'tech', 'label': '技术顾问', 'icon': '💻', 'desc': '代码、架构、技术方案'},
-            {'id': 'hr', 'label': 'HR 助理', 'icon': '📋', 'desc': '人事政策、绩效、招聘'},
-            {'id': 'legal', 'label': '法务助理', 'icon': '⚖️', 'desc': '合同、合规、法律问题'},
+        "roles": [
+            {"id": "default", "label": "通用助手", "icon": "🤖", "desc": "日常问答、通用任务"},
+            {"id": "tech", "label": "技术顾问", "icon": "💻", "desc": "代码、架构、技术方案"},
+            {"id": "hr", "label": "HR 助理", "icon": "📋", "desc": "人事政策、绩效、招聘"},
+            {"id": "legal", "label": "法务助理", "icon": "⚖️", "desc": "合同、合规、法律问题"},
         ]
     }

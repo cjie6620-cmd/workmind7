@@ -44,8 +44,8 @@
       </div>
 
       <!-- 清除画像按钮 -->
-      <button v-if="!isEmpty" class="btn-clear" @click="clearProfile">
-        <el-icon><Delete /></el-icon> 清除记忆
+      <button v-if="!isEmpty" class="btn-clear" :disabled="chatStore.profileClearing" @click="clearProfile">
+        <el-icon><Delete /></el-icon> {{ chatStore.profileClearing ? '清除中...' : '清除记忆' }}
       </button>
     </div>
   </div>
@@ -66,8 +66,9 @@ const isEmpty = computed(() => {
          !profile.prefersShort && !profile.prefersCode
 })
 
-function clearProfile() {
-  chatStore.profile = {}
+async function clearProfile() {
+  if (!confirm('确定永久清除 AI 已记住的画像与偏好吗？')) return
+  await chatStore.clearProfile()
 }
 </script>
 
@@ -186,4 +187,5 @@ export default { components: { ProfileItem } }
   transition: all var(--transition);
 }
 .btn-clear:hover { border-color: var(--color-danger); color: var(--color-danger); }
+.btn-clear:disabled { opacity:.5; cursor:wait; }
 </style>

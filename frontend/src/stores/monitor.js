@@ -2,6 +2,7 @@
 // 成本监控 store（第七章完整实现，这里先放基础结构）
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import http from '@/utils/http.js'
 
 export const useMonitorStore = defineStore('monitor', () => {
   const dailyBudget = ref(50)     // ¥50 日预算
@@ -18,17 +19,42 @@ export const useMonitorStore = defineStore('monitor', () => {
     return null
   })
 
-  // 记录一次 API 调用
-  function recordCall({ inputTokens = 0, outputTokens = 0, fromCache = false, feature = 'chat' }) {
-    totalCalls.value++
-    if (fromCache) {
-      cacheHits.value++
-      return
+  let refreshTimer = null
+
+  async function loadStats() {
+    try {
+      const data = await http.get('/monitor/stats')
+      const overview = data.overview || {}
+      dailyBudget.value = Number(overview.dailyBudget || 0)
+      todaySpend.value = Number(overview.costCNYToday || 0)
+      totalCalls.value = Number(overview.totalCallsToday || 0)
+      cacheHits.value = Number(overview.cacheHitsToday || 0)
+      return data
+    } catch {
+      return null
     }
-    // 按 DeepSeek 价格估算：输入 $0.27/M，输出 $1.10/M，汇率 7.2
-    const usd = (inputTokens / 1e6 * 0.27) + (outputTokens / 1e6 * 1.10)
-    todaySpend.value += usd * 7.2
   }
 
-  return { dailyBudget, todaySpend, totalCalls, cacheHits, budgetWarning, recordCall }
+  // 价格只由后端统一计算；业务完成后防抖刷新权威监控数据。
+  function recordCall() {
+    if (refreshTimer) return
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null
+      await loadStats()
+    }, 300)
+  }
+
+  function reset() {
+    if (refreshTimer) clearTimeout(refreshTimer)
+    refreshTimer = null
+    dailyBudget.value = 50
+    todaySpend.value = 0
+    totalCalls.value = 0
+    cacheHits.value = 0
+  }
+
+  return {
+    dailyBudget, todaySpend, totalCalls, cacheHits,
+    budgetWarning, loadStats, recordCall, reset,
+  }
 })

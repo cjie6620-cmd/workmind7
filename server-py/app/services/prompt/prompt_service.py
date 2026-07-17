@@ -10,8 +10,7 @@ Prompt 服务模块
 """
 
 import asyncio
-from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -24,6 +23,7 @@ from ..config.config_service import (
     update_config as db_update,
     delete_config as db_delete,
 )
+from ...utils.business_time import business_now
 from ...utils.llm_parse import parse_with_retry
 
 score_model = create_chat_model(temperature=0)
@@ -31,45 +31,56 @@ score_model = create_chat_model(temperature=0)
 
 # ── 模板 CRUD（数据库存储）───────────────────────────────────
 
+
 async def list_templates() -> list[dict]:
     """获取所有 Prompt 模板（从数据库，按更新时间倒序）"""
-    configs = await db_list('prompt')
+    configs = await db_list("prompt")
     # 转换为前端兼容的模板格式
     templates = []
     for c in configs:
-        cj = c['configJson']
-        templates.append({
-            'id': c['id'],
-            'name': c['name'],
-            'systemPrompt': cj.get('systemPrompt', ''),
-            'description': cj.get('description', ''),
-            'tags': cj.get('tags', []),
-            'createdAt': c['createdAt'],
-            'updatedAt': c['updatedAt'],
-            'versions': cj.get('versions', []),
-        })
+        if not c.get("isActive"):
+            continue
+        cj = c["configJson"]
+        templates.append(
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "systemPrompt": cj.get("systemPrompt", ""),
+                "description": cj.get("description", ""),
+                "tags": cj.get("tags", []),
+                "createdAt": c["createdAt"],
+                "updatedAt": c["updatedAt"],
+                "versions": cj.get("versions", []),
+            }
+        )
     return templates
 
 
 async def get_template(template_id: str) -> Optional[dict]:
     """获取指定模板"""
     c = await db_get(template_id)
-    if not c or c['configType'] != 'prompt':
+    if not c or c["configType"] != "prompt":
         return None
-    cj = c['configJson']
+    cj = c["configJson"]
     return {
-        'id': c['id'],
-        'name': c['name'],
-        'systemPrompt': cj.get('systemPrompt', ''),
-        'description': cj.get('description', ''),
-        'tags': cj.get('tags', []),
-        'createdAt': c['createdAt'],
-        'updatedAt': c['updatedAt'],
-        'versions': cj.get('versions', []),
+        "id": c["id"],
+        "name": c["name"],
+        "systemPrompt": cj.get("systemPrompt", ""),
+        "description": cj.get("description", ""),
+        "tags": cj.get("tags", []),
+        "createdAt": c["createdAt"],
+        "updatedAt": c["updatedAt"],
+        "versions": cj.get("versions", []),
     }
 
 
-async def save_template(name: str, system_prompt: str, description: str = '', tags: list = None, existing_id: str = None) -> dict:
+async def save_template(
+    name: str,
+    system_prompt: str,
+    description: str = "",
+    tags: list[str] | None = None,
+    existing_id: str | None = None,
+) -> dict:
     """
     创建或更新模板
 
@@ -80,75 +91,87 @@ async def save_template(name: str, system_prompt: str, description: str = '', ta
     if existing_id:
         # 更新：先获取现有数据，追加版本历史
         existing = await db_get(existing_id)
-        if not existing:
-            raise ValueError('模板不存在')
+        if not existing or existing["configType"] != "prompt":
+            raise ValueError("模板不存在")
 
-        old_cj = existing['configJson']
-        old_versions = old_cj.get('versions', [])
+        old_cj = existing["configJson"]
+        old_versions = old_cj.get("versions", [])
 
         # 追加版本历史
         new_versions = [
             *old_versions,
             {
-                'version': len(old_versions) + 1,
-                'systemPrompt': old_cj.get('systemPrompt', ''),
-                'savedAt': datetime.now().isoformat(),
+                # AgentConfig.version 单调递增，不受历史仅保留 10 条的裁剪影响。
+                "version": existing["version"],
+                "systemPrompt": old_cj.get("systemPrompt", ""),
+                "savedAt": business_now().isoformat(),
             },
         ][-10:]  # 最多保留 10 个版本
 
         config_json = {
-            'systemPrompt': system_prompt,
-            'description': description,
-            'tags': tags,
-            'versions': new_versions,
+            "systemPrompt": system_prompt,
+            "description": description,
+            "tags": tags,
+            "versions": new_versions,
         }
-        result = await db_update(existing_id, name=name, config_json=config_json)
+        result = await db_update(
+            existing_id,
+            name=name,
+            config_json=config_json,
+            expected_version=existing["version"],
+        )
     else:
         # 新建
         config_json = {
-            'systemPrompt': system_prompt,
-            'description': description,
-            'tags': tags,
-            'versions': [],
+            "systemPrompt": system_prompt,
+            "description": description,
+            "tags": tags,
+            "versions": [],
         }
-        result = await db_create('prompt', name, config_json)
+        result = await db_create("prompt", name, config_json)
 
     # 转换为前端兼容格式
-    cj = result['configJson']
+    cj = result["configJson"]
     return {
-        'id': result['id'],
-        'name': result['name'],
-        'systemPrompt': cj.get('systemPrompt', ''),
-        'description': cj.get('description', ''),
-        'tags': cj.get('tags', []),
-        'createdAt': result['createdAt'],
-        'updatedAt': result['updatedAt'],
-        'versions': cj.get('versions', []),
+        "id": result["id"],
+        "name": result["name"],
+        "systemPrompt": cj.get("systemPrompt", ""),
+        "description": cj.get("description", ""),
+        "tags": cj.get("tags", []),
+        "createdAt": result["createdAt"],
+        "updatedAt": result["updatedAt"],
+        "versions": cj.get("versions", []),
     }
 
 
 async def delete_template(template_id: str):
     """删除模板"""
+    existing = await db_get(template_id)
+    if not existing or existing["configType"] != "prompt":
+        raise ValueError("模板不存在")
     await db_delete(template_id)
 
 
 # ── A/B 评分 ────────────────────────────────────────────────
 
+
 class ScoreResult(BaseModel):
     """单个回答评分结果"""
-    relevance: int
-    accuracy: int
-    clarity: int
-    conciseness: int
-    overall: int
-    winner: Literal['A', 'B', 'tie']
-    reason: str
+
+    relevance: int = Field(ge=1, le=5)
+    accuracy: int = Field(ge=1, le=5)
+    clarity: int = Field(ge=1, le=5)
+    conciseness: int = Field(ge=1, le=5)
+    overall: int = Field(ge=1, le=5)
+    winner: Literal["A", "B", "tie"]
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class CompareResult(BaseModel):
     """A/B 比较结果"""
-    winner: Literal['A', 'B', 'tie']
-    reason: str
+
+    winner: Literal["A", "B", "tie"]
+    reason: str = Field(min_length=1, max_length=500)
 
 
 async def score_ab_test(question, answer_a, answer_b):
@@ -176,12 +199,12 @@ async def score_ab_test(question, answer_a, answer_b):
     eval_a, eval_b = await asyncio.gather(
         parse_with_retry(
             score_model,
-            [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_a}')],
+            [SystemMessage(eval_prompt), HumanMessage(f"问题：{question}\n\n回答：{answer_a}")],
             ScoreResult,
         ),
         parse_with_retry(
             score_model,
-            [SystemMessage(eval_prompt), HumanMessage(f'问题：{question}\n\n回答：{answer_b}')],
+            [SystemMessage(eval_prompt), HumanMessage(f"问题：{question}\n\n回答：{answer_b}")],
             ScoreResult,
         ),
     )
@@ -209,8 +232,8 @@ B的评分：相关性{eval_b.relevance} 准确性{eval_b.accuracy} 清晰度{ev
     )
 
     return {
-        'scoreA': eval_a.model_dump(),
-        'scoreB': eval_b.model_dump(),
-        'winner': comparison.winner,
-        'reason': comparison.reason,
+        "scoreA": eval_a.model_dump(),
+        "scoreB": eval_b.model_dump(),
+        "winner": comparison.winner,
+        "reason": comparison.reason,
     }

@@ -8,7 +8,10 @@ PGVector LangChain 检索器封装
 import asyncio
 from typing import List, Optional
 
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForRetrieverRun,
+    CallbackManagerForRetrieverRun,
+)
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import Field
@@ -27,22 +30,21 @@ class PGVectorRetriever(BaseRetriever):
     k: int = Field(default=20, description="返回文档数量")
     category: Optional[str] = Field(default=None, description="按分类过滤")
 
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
-    ) -> List[Document]:
+    def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> List[Document]:
         """同步检索（通过 asyncio.run 包装）"""
         loop = asyncio.get_event_loop()
         if loop.is_running():
             # 在已有事件循环中（如 FastAPI），无法直接 run
             # 这种场景应使用 _aget_relevant_documents
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 future = pool.submit(asyncio.run, self._async_search(query))
                 return future.result()
         return asyncio.run(self._async_search(query))
 
     async def _aget_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+        self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
     ) -> List[Document]:
         """异步检索：调用 pgvector 余弦相似度搜索"""
         return await self._async_search(query)
@@ -64,24 +66,27 @@ class PGVectorRetriever(BaseRetriever):
             category=self.category,
         )
 
-        documents = []
+        documents: list[Document] = []
         for doc_dict, score in results:
             doc = Document(
-                page_content=doc_dict['pageContent'],
+                page_content=doc_dict["pageContent"],
                 metadata={
-                    **doc_dict.get('metadata', {}),
-                    'chunk_id': doc_dict['id'],
-                    'doc_id': doc_dict['doc_id'],
-                    'chunk_index': doc_dict['chunk_index'],
-                    'vector_score': round(score, 4),
+                    **doc_dict.get("metadata", {}),
+                    "chunk_id": doc_dict["id"],
+                    "doc_id": doc_dict["doc_id"],
+                    "chunk_index": doc_dict["chunk_index"],
+                    "vector_score": round(score, 4),
                 },
             )
             documents.append(doc)
 
-        logger.info('retriever: vector search done', {
-            'query': query[:40],
-            'k': self.k,
-            'results': len(documents),
-        })
+        logger.info(
+            "retriever: vector search done",
+            {
+                "query": query[:40],
+                "k": self.k,
+                "results": len(documents),
+            },
+        )
 
         return documents

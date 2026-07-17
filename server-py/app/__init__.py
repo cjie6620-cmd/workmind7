@@ -13,4 +13,4 @@ WorkMind AI Server - Python Edition
 - 用量监控与成本统计
 """
 
-__version__ = '1.0.0'
+__version__ = "1.0.0"

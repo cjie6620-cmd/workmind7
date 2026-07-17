@@ -11,11 +11,11 @@
       </div>
       <div class="record-section">
         <div class="record-header" @click="showRecords = !showRecords">
-          <span>申请记录 ({{ erpStore.applications.length }})</span>
+          <span>预演记录 ({{ erpStore.applications.length }})</span>
           <span>{{ showRecords ? '▴' : '▾' }}</span>
         </div>
         <div v-if="showRecords" class="record-list">
-          <div v-if="!erpStore.applications.length" class="record-empty">暂无申请记录</div>
+          <div v-if="!erpStore.applications.length" class="record-empty">暂无预演记录</div>
           <div v-for="app in erpStore.applications" :key="app.id" class="record-item">
             <div class="record-top">
               <span class="record-id">{{ app.id }}</span>
@@ -30,11 +30,11 @@
 
     <main class="erp-main">
       <div v-if="!erpStore.approving && !erpStore.approvalMessages.length && !erpStore.finalResult" class="main-empty">
-        <div class="empty-title">ERP 智能报销与请假</div>
-        <div class="empty-desc">在左侧用自然语言描述，AI 自动填表后提交，多个 Agent 模拟真实审批流程</div>
+        <div class="empty-title">ERP 审批预演（模拟）</div>
+        <div class="empty-desc">AI 自动填表并模拟多角色预审，仅用于流程预演，不代表正式审批结果</div>
         <div class="feature-list">
           <div class="feature-item">自然语言填单，告别繁琐表格</div>
-          <div class="feature-item">多 Agent 模拟真实审批对话</div>
+          <div class="feature-item">多 Agent 模拟审批对话</div>
           <div class="feature-item">自动检测不合规费用</div>
         </div>
       </div>
@@ -49,6 +49,7 @@
         </div>
         <ApprovalTimeline class="timeline-area" />
         <div v-if="erpStore.finalResult" class="done-actions">
+          <span class="simulation-notice">模拟结果不代表正式审批，请以企业 ERP 结果为准</span>
           <button class="btn btn-ghost" @click="erpStore.reset()">开始新申请</button>
         </div>
       </div>
@@ -57,23 +58,26 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useErpStore } from '@/stores/erp.js'
+import { useAuthStore } from '@/stores/auth.js'
 import SmartFormParser from '@/components/erp/SmartFormParser.vue'
 import ApprovalTimeline from '@/components/erp/ApprovalTimeline.vue'
 
 const erpStore    = useErpStore()
+const authStore   = useAuthStore()
 const showRecords = ref(false)
 
 function switchType(type) { erpStore.formType = type; erpStore.reset() }
-async function startApproval() { await erpStore.submitApproval('申请人') }
-function statusLabel(s) { return { pending: '审批中', approved: '已通过', rejected: '已驳回' }[s] || s }
+async function startApproval() { await erpStore.submitApproval(authStore.user?.username || '申请人') }
+function statusLabel(s) { return { pending: '模拟中', approved: '模拟通过', rejected: '模拟未通过' }[s] || s }
 function formatTime(iso) {
   if (!iso) return ''
   const d = new Date(iso)
   return `${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`
 }
 onMounted(() => erpStore.loadApplications())
+onUnmounted(() => erpStore.detachApproval())
 </script>
 
 <style scoped>
@@ -110,5 +114,6 @@ onMounted(() => erpStore.loadApplications())
 .app-type { display:inline-flex; align-items:center; gap:4px; font-weight:700; color:var(--color-text); }
 .app-id   { font-size:11px; font-family:var(--font-mono); margin-left:auto; color:var(--color-text-muted); }
 .timeline-area { flex:1; overflow:hidden; }
-.done-actions { padding:var(--space-md) var(--space-xl); border-top:1px solid var(--color-border); display:flex; justify-content:flex-end; background:var(--color-surface); flex-shrink:0; }
+.done-actions { padding:var(--space-md) var(--space-xl); border-top:1px solid var(--color-border); display:flex; align-items:center; gap:var(--space-md); justify-content:flex-end; background:var(--color-surface); flex-shrink:0; }
+.simulation-notice { margin-right:auto; font-size:12px; color:var(--color-warning); }
 </style>
