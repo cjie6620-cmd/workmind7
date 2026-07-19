@@ -38,6 +38,11 @@ if not DB_URL:
 _engine_kwargs: dict = {
     "pool_size": _db_config.get("pool_size", 10),
     "max_overflow": _db_config.get("max_overflow", 20),
+    # 取连接前 ping，剔除 DB 重启/空闲断连后的失效连接，避免突发 500
+    "pool_pre_ping": True,
+    # 定期回收长寿命连接，防止被 DB/LB 超时静默关闭
+    "pool_recycle": _db_config.get("pool_recycle", 1800),
+    "pool_timeout": _db_config.get("pool_timeout", 30),
     "echo": False,
 }
 if os.environ.get("TESTING") == "1":

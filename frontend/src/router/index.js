@@ -55,6 +55,11 @@ const routes = [
     component: () => import('@/views/MonitorView.vue'),
     meta: { title: '用量看板', icon: '📊', adminOnly: true },
   },
+  {
+    // 未知路径兜底，避免 SPA 落到空白主区
+    path: '/:pathMatch(.*)*',
+    redirect: '/chat',
+  },
 ]
 
 const router = createRouter({

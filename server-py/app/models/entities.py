@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -172,6 +173,9 @@ class RagChunk(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_where=text("embedding IS NOT NULL"),
         ),
+        # BM25 版本探测用 MAX(updated_at)，按分类过滤用 metadata->>'category'；补索引避免全表扫描
+        Index("idx_rag_chunks_updated_at", "updated_at"),
+        Index("idx_rag_chunks_category", text("(metadata ->> 'category')")),
         UniqueConstraint("doc_id", "chunk_index", name="uq_rag_chunks_doc_chunk"),
     )
 
@@ -187,7 +191,13 @@ class Conversation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="所属用户 ID")
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        ForeignKey("users.id", name="fk_conversations_user", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="所属用户 ID",
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system
     content: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -220,7 +230,12 @@ class ApprovalRecord(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False, comment="申请人用户 ID，由认证上下文写入")
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", name="fk_approval_records_user", ondelete="CASCADE"),
+        nullable=False,
+        comment="申请人用户 ID，由认证上下文写入",
+    )
     request_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, comment="客户端幂等请求 ID")
     form_type: Mapped[str] = mapped_column(String(32), nullable=False)  # expense/leave
     form_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -248,6 +263,8 @@ class ApprovalRecord(Base):
             postgresql_where=text("request_id IS NOT NULL"),
         ),
         Index("idx_approval_status", "status"),
+        # 管理员列表按 created_at 全局排序，补单列索引服务 Top-N
+        Index("idx_approval_created", "created_at"),
     )
 
 
@@ -295,7 +312,8 @@ class MonitorRecord(Base):
 
     __tablename__ = "monitor_records"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # BigInteger 主键：每次 LLM 调用插一行，Integer(2^31) 会在高流量下溢出。
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     time: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
     feature: Mapped[str] = mapped_column(String(32), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)

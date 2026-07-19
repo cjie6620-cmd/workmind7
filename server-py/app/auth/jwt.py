@@ -39,8 +39,8 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
     return jwt.encode(payload, _secret(), algorithm=_algorithm())
 
 
-def create_refresh_token(user_id: str, username: str, role: str) -> str:
-    """签发 refresh token"""
+def create_refresh_token(user_id: str, username: str, role: str, jti: str) -> str:
+    """签发 refresh token；jti 用于服务端一次性轮换与吊销。"""
     days = _auth_cfg()["jwt_refresh_expire_days"]
     now = datetime.now(timezone.utc)
     payload = {
@@ -48,6 +48,7 @@ def create_refresh_token(user_id: str, username: str, role: str) -> str:
         "username": username,
         "role": role,
         "type": TOKEN_TYPE_REFRESH,
+        "jti": jti,
         "iat": now,
         "exp": now + timedelta(days=days),
     }
@@ -78,3 +79,8 @@ def payload_to_user(payload: dict[str, Any]) -> UserContext:
 def access_token_ttl_seconds() -> int:
     """access token 有效期（秒）"""
     return int(_auth_cfg()["jwt_expire_hours"]) * 3600
+
+
+def refresh_token_ttl_seconds() -> int:
+    """refresh token 有效期（秒），用于 jti 在 Redis 中的存活时间。"""
+    return int(_auth_cfg()["jwt_refresh_expire_days"]) * 86400

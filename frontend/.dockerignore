@@ -1,0 +1,9 @@
+# 避免把依赖、构建产物与本地文件打进构建上下文
+node_modules/
+dist/
+.git/
+.gitignore
+*.log
+.env
+.env.*
+!.env.example

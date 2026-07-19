@@ -92,6 +92,8 @@ config = {
         "url": _env("DATABASE_URL"),
         "pool_size": int(_env("DB_POOL_SIZE", "10")),
         "max_overflow": int(_env("DB_MAX_OVERFLOW", "20")),
+        "pool_recycle": int(_env("DB_POOL_RECYCLE", "1800")),
+        "pool_timeout": int(_env("DB_POOL_TIMEOUT", "30")),
     },
     "auth": {
         "enabled": _env("AUTH_ENABLED", "true").lower() in ("1", "true", "yes"),
@@ -146,6 +148,11 @@ def validate_config():
         origins = config["app"]["allowed_origins"]
         if "*" in origins:
             print("[ERROR] 生产环境 ALLOWED_ORIGINS 禁止包含 *", file=sys.stderr)
+            raise SystemExit(1)
+
+        # 生产必须启用认证：AUTH_ENABLED=false 会让所有请求走 dev 免认证后门并获得 admin 权限。
+        if not config["auth"]["enabled"]:
+            print("[ERROR] 生产环境禁止 AUTH_ENABLED=false（会启用免认证 admin 后门）", file=sys.stderr)
             raise SystemExit(1)
 
     if not config["redis"]["password"] and config["app"]["env"] != "production":

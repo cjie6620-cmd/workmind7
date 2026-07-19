@@ -41,13 +41,14 @@ async def test_calculator_bounds_complexity_and_exponents():
     assert "幂运算超出" in await calculate.ainvoke({"expression": "9 ** 999999"})
 
 
-def test_report_storage_failure_should_raise():
+@pytest.mark.asyncio
+async def test_report_storage_failure_should_raise():
     redis = MagicMock()
-    redis.setex.side_effect = RuntimeError("redis unavailable")
+    redis.pipeline.return_value.execute.side_effect = RuntimeError("redis unavailable")
 
     with patch("app.services.agent.report_store.get_redis", return_value=redis):
         with pytest.raises(ReportStorageError):
-            save_report("title", "content", "user-1")
+            await save_report("title", "content", "user-1")
 
 
 def test_report_download_header_should_be_a_valid_string():

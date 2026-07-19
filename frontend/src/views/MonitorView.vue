@@ -187,9 +187,19 @@ onMounted(() => { loadStats(); pollTimer = setInterval(loadStats, 10000) })
 onUnmounted(() => clearInterval(pollTimer))
 </script>
 <script>
+import { h } from 'vue'
+
+// 用渲染函数而非 template 字符串：生产 runtime-only 构建不含模板编译器，
+// template 字符串组件会渲染为空白并告警。
 const MetricCard = {
-  props: ['label','value','sub','color'],
-  template: `<div class="metric-card" :class="'color-'+color"><div class="metric-value">{{value}}</div><div class="metric-label">{{label}}</div><div class="metric-sub">{{sub}}</div></div>`,
+  props: ['label', 'value', 'sub', 'color'],
+  render() {
+    return h('div', { class: ['metric-card', `color-${this.color}`] }, [
+      h('div', { class: 'metric-value' }, this.value),
+      h('div', { class: 'metric-label' }, this.label),
+      h('div', { class: 'metric-sub' }, this.sub),
+    ])
+  },
 }
 export default { components: { MetricCard } }
 </script>

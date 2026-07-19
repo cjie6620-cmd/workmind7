@@ -17,8 +17,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
-# 是否为生产环境
-is_prod = os.environ.get("NODE_ENV", "") == "production"
+# 是否为生产环境：与 config 一致优先 APP_ENV，兼容旧的 NODE_ENV。
+# 生产 Compose 只设 APP_ENV，此前仅判 NODE_ENV 会让生产日志退回彩色/调试输出。
+is_prod = (os.environ.get("APP_ENV") or os.environ.get("NODE_ENV", "")) == "production"
 
 # ANSI 颜色码
 COLORS = {

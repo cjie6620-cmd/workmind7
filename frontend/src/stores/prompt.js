@@ -219,7 +219,7 @@ export const usePromptStore = defineStore('prompt', () => {
         ? `/prompt/templates/${editingId.value}`
         : '/prompt/templates'
       const method = editingId.value ? 'put' : 'post'
-      await http[method](url, form)
+      await http[method](url, form, { silent: true })
       if (version !== stateVersion) return false
       await loadTemplates()
       appStore.toast.success(editingId.value ? '模板已更新' : '模板已保存')

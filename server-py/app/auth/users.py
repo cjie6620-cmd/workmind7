@@ -4,6 +4,7 @@
 users 表是启用认证后的唯一身份来源；环境变量账号只用于应用启动时写入种子用户。
 """
 
+import asyncio
 from dataclasses import dataclass
 
 import bcrypt
@@ -28,7 +29,7 @@ class AuthStoreUnavailable(RuntimeError):
 
 
 def _verify_password(plain: str, password_hash: str) -> bool:
-    """校验明文密码与 bcrypt 哈希"""
+    """校验明文密码与 bcrypt 哈希（同步 CPU 操作，调用方须放线程池）。"""
     try:
         return bcrypt.checkpw(plain.encode("utf-8"), password_hash.encode("utf-8"))
     except ValueError:
@@ -36,18 +37,21 @@ def _verify_password(plain: str, password_hash: str) -> bool:
 
 
 async def authenticate_db(username: str, password: str) -> StoredUser | None:
-    """从数据库校验用户名密码"""
+    """从数据库校验用户名密码；bcrypt 校验放线程池，避免阻塞事件循环。"""
     async with async_session_factory() as session:
         result = await session.execute(select(User).where(User.username == username, User.is_active.is_(True)))
         row = result.scalar_one_or_none()
-        if not row or not _verify_password(password, row.password_hash):
-            return None
-        return StoredUser(
-            user_id=row.id,
-            username=row.username,
-            password="",
-            role=row.role,
-        )
+    if not row:
+        return None
+    verified = await asyncio.to_thread(_verify_password, password, row.password_hash)
+    if not verified:
+        return None
+    return StoredUser(
+        user_id=row.id,
+        username=row.username,
+        password="",
+        role=row.role,
+    )
 
 
 async def get_user_by_id(user_id: str) -> StoredUser | None:

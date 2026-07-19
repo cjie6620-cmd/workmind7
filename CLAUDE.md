@@ -63,7 +63,7 @@
 ## 角色规则索引（已归档）
 
 > **2026-07-17 起**：仓库内 `.claude/roles/` 角色模板文件已移除，不再作为可加载路径。  
-> 开发仍须遵守本文件其余章节（国产模型、分层、测试、安全、Prompt 管理等），以及 `docs/permissions.md`、`docs/production-readiness.md`、`docs/bug-audit-2026-07-17.md`。
+> 开发仍须遵守本文件其余章节（国产模型、分层、测试、安全、Prompt 管理等），以及 `docs/permissions.md`、`docs/production-readiness.md`。
 
 > **模型合规约束（强制）**：所有 LLM 调用**必须使用国产大模型**（主力 **DeepSeek**，备选通义千问 / 智谱 GLM / 零一万物 / 豆包），**禁止使用任何国外 API**（OpenAI / Anthropic / Cohere / Jina / OpenRouter）。
 

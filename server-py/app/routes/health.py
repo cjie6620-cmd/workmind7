@@ -102,7 +102,7 @@ async def health_root():
     return {
         "status": "healthy",
         "uptime": _uptime_seconds(),
-        "cache": cache.get_stats(),
+        "cache": await asyncio.to_thread(cache.get_stats),
         "version": "1.0.0",
         "database": db_status,
     }

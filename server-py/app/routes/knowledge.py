@@ -34,10 +34,15 @@ from ..services.rag.ingest import (
 from ..services.rag.query import rag_query_stream
 from ..services.chat.memory import save_message, get_session_info
 from ..schemas.requests import KnowledgeQueryRequest
+from ..middleware import check_injection
 from ..utils.sse import sse_event, sse_error
 from ..utils.file_validate import validate_file, validate_ext, MAX_FILE_SIZE
 from ..utils.logger import logger
 from ..utils.session_guard import assert_session_owner
+
+# 上传标题/分类的最大长度，与 documents 表列宽对齐，避免超长触发 DB 500
+MAX_TITLE_LEN = 200
+MAX_CATEGORY_LEN = 64
 
 knowledge_router = APIRouter()
 
@@ -95,6 +100,37 @@ def _parse_multipart_boundary(content_type):
     return None
 
 
+async def _read_body_bounded(request) -> bytes:
+    """增量读取请求体并累计长度，超限立即中断。
+
+    仅靠 Content-Length 预检无法防护 chunked（无该头）上传，攻击者可让
+    request.body() 把任意大请求体整包读入内存。这里按块累加、超限即拒。
+    """
+    max_bytes = MAX_FILE_SIZE + 64 * 1024
+
+    # 第一步：有 Content-Length 时先快速拒绝，省去无谓读取
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError as err:
+            raise ValueError("非法 Content-Length") from err
+        if declared > max_bytes:
+            raise ValueError(f"上传体积超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）")
+
+    # 第二步：无论是否声明长度，都按流增量累计，堵住 chunked 绕过
+    chunks: list[bytes] = []
+    total = 0
+    async for part in request.stream():
+        if not part:
+            continue
+        total += len(part)
+        if total > max_bytes:
+            raise ValueError(f"上传体积超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）")
+        chunks.append(part)
+    return b"".join(chunks)
+
+
 async def _read_multipart(request):
     """
     手动解析 multipart/form-data，避免 python-multipart 与 torch 的段错误冲突。
@@ -105,20 +141,7 @@ async def _read_multipart(request):
     if not boundary:
         return {}, None
 
-    # 第一步：按 Content-Length 提前拒绝超限请求，避免整包读入内存
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            if int(content_length) > MAX_FILE_SIZE + 64 * 1024:
-                raise ValueError(f"上传体积超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）")
-        except ValueError as err:
-            if "上传体积" in str(err):
-                raise
-            raise ValueError("非法 Content-Length") from err
-
-    body = await request.body()
-    if len(body) > MAX_FILE_SIZE + 64 * 1024:
-        raise ValueError(f"上传体积超过限制（最大 {MAX_FILE_SIZE // (1024 * 1024)}MB）")
+    body = await _read_body_bounded(request)
     delimiter = b"--" + boundary.encode()
 
     fields = {}
@@ -176,8 +199,8 @@ async def upload_document(
                 fields, file_data = await _read_multipart(request)
             except ValueError as err:
                 return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
-            title = fields.get("title") or "未命名文档"
-            category = fields.get("category") or "通用"
+            title = (fields.get("title") or "未命名文档")[:MAX_TITLE_LEN]
+            category = (fields.get("category") or "通用")[:MAX_CATEGORY_LEN]
 
             if not file_data:
                 return JSONResponse(
@@ -220,12 +243,16 @@ async def upload_document(
 
         elif "application/json" in content_type:
             try:
-                payload = await request.json()
-            except json.JSONDecodeError:
+                raw_body = await _read_body_bounded(request)
+            except ValueError as err:
+                return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+            try:
+                payload = json.loads(raw_body)
+            except (json.JSONDecodeError, ValueError):
                 return JSONResponse(status_code=400, content={"error": {"message": "JSON 格式不正确"}})
 
-            title = payload.get("title", "未命名文档")
-            category = payload.get("category", "通用")
+            title = str(payload.get("title", "未命名文档"))[:MAX_TITLE_LEN]
+            category = str(payload.get("category", "通用"))[:MAX_CATEGORY_LEN]
             content = payload.get("content")
 
             if not content:
@@ -263,8 +290,9 @@ async def upload_document(
         return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
     except Exception as err:
         _remove_file(file_path)
+        # 内部异常细节（SQL、驱动、路径）只记日志，对客户端返回通用文案。
         logger.error("knowledge: ingest error", {"error": str(err)})
-        return JSONResponse(status_code=500, content={"error": {"message": str(err) or "文档处理失败"}})
+        return JSONResponse(status_code=500, content={"error": {"message": "文档处理失败"}})
 
 
 @knowledge_router.get("/documents")
@@ -325,6 +353,10 @@ async def rag_stream(
 
     if not question:
         return JSONResponse(status_code=400, content={"error": {"message": "问题不能为空"}})
+
+    # 与 chat/agent 入口一致的注入检测；用户输入先过滤再进入检索与生成。
+    if check_injection(question):
+        return JSONResponse(status_code=400, content={"error": {"message": "输入内容不符合使用规范"}})
 
     await assert_session_owner(session_id, user_id)
 
@@ -423,48 +455,22 @@ async def get_knowledge_history(session_id: str, user: UserContext = Depends(get
 
 
 @knowledge_router.get("/sessions")
-async def get_knowledge_sessions(user: UserContext = Depends(get_current_user)):
-    """获取当前用户的知识库会话列表"""
-    from sqlalchemy import select, func
-    from ..core.database import async_session_factory
-    from ..models.entities import Conversation
+async def get_knowledge_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    user: UserContext = Depends(get_current_user),
+):
+    """获取当前用户的知识库会话列表（分页，无 N+1）"""
+    from ..services.chat.memory import list_sessions_by_prefix
 
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(
-                Conversation.session_id,
-                func.count(Conversation.id).label("msg_count"),
-                func.min(Conversation.created_at).label("created_at"),
-            )
-            .where(Conversation.session_id.like("knowledge_%"))
-            .where(Conversation.user_id == user.user_id)
-            .group_by(Conversation.session_id)
-            .order_by(func.min(Conversation.created_at).desc())
-        )
-        rows = result.all()
-
-        sessions = []
-        for row in rows:
-            sid = row[0]
-            # 取第一条用户消息作为标题
-            title_stmt = (
-                select(Conversation.content)
-                .where(Conversation.session_id == sid)
-                .where(Conversation.role == "user")
-                .order_by(Conversation.created_at)
-                .limit(1)
-            )
-            title_stmt = title_stmt.where(Conversation.user_id == user.user_id)
-            r = await session.execute(title_stmt)
-            first_msg = r.scalar_one_or_none()
-            title = first_msg[:30] + ("..." if first_msg and len(first_msg) > 30 else "") if first_msg else "知识库问答"
-            sessions.append(
-                {
-                    "id": sid,
-                    "title": title,
-                    "messageCount": row[1],
-                    "createdAt": row[2].isoformat() if row[2] else None,
-                }
-            )
-
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    sessions = await list_sessions_by_prefix(
+        user.user_id,
+        "knowledge_",
+        limit=limit,
+        offset=offset,
+        default_title="知识库问答",
+        title_len=30,
+    )
     return {"sessions": sessions}

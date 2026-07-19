@@ -93,7 +93,7 @@ async def test_same_category_concurrency_should_build_once():
     built = object()
     build_count = 0
 
-    async def build(category):
+    async def build(category, owner_user_id=None):
         nonlocal build_count
         build_count += 1
         await asyncio.sleep(0)
@@ -117,7 +117,7 @@ async def test_same_category_concurrency_should_build_once():
 async def test_different_categories_should_not_replace_each_other():
     from app.services.rag import hybrid_retriever as mod
 
-    async def build(category):
+    async def build(category, owner_user_id=None):
         await asyncio.sleep(0)
         return SimpleNamespace(category=category)
 
@@ -132,9 +132,10 @@ async def test_different_categories_should_not_replace_each_other():
 
     assert hr.category == "HR"
     assert finance.category == "财务"
-    assert set(mod._bm25_cache) == {"HR", "财务"}
-    assert mod._bm25_cache["HR"].retriever is hr
-    assert mod._bm25_cache["财务"].retriever is finance
+    # 缓存键为 (category, owner_user_id) 复合键
+    assert set(mod._bm25_cache) == {("HR", None), ("财务", None)}
+    assert mod._bm25_cache[("HR", None)].retriever is hr
+    assert mod._bm25_cache[("财务", None)].retriever is finance
 
 
 @pytest.mark.asyncio
@@ -147,7 +148,7 @@ async def test_database_version_change_should_rebuild_cached_category():
     async def get_version(category):
         return state["version"]
 
-    async def build(category):
+    async def build(category, owner_user_id=None):
         retriever = object()
         builds.append(retriever)
         return retriever

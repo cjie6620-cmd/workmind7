@@ -23,6 +23,7 @@ from ..auth.models import UserContext
 from ..config import config
 from ..services.model import get_chat_model
 from ..services.cache import build_cache_context, cache
+from ..routes.monitor import record_api_call
 from ..services.chat.memory import (
     get_history_db,
     trim_history,
@@ -75,7 +76,8 @@ async def chat_stream(
             profile = await get_profile(user_id)
             profile_ctx = profile_to_context(profile)
             system_prompt = base_system + profile_ctx
-            raw_history = await get_history_db(session_id)
+            # 只取最近 50 条构建上下文，避免长会话每条消息都全量拉回；再按 token 预算裁剪
+            raw_history = await get_history_db(session_id, limit=50)
             history_msgs = [{"role": msg["role"], "content": msg["content"]} for msg in raw_history]
             trimmed = trim_history(history_msgs, 2000)
             model_name = config["ai"]["primary_model"]
@@ -88,9 +90,11 @@ async def chat_stream(
                 model_context={"name": model_name, "temperature": 0.7},
             )
 
-            cached = cache.get(cache_context)
+            cached = await asyncio.to_thread(cache.get, cache_context)
             if cached:
                 logger.info("cache hit", {"sessionId": session_id, "msg": message[:30]})
+                # 记录一条 from_cache 监控行，使看板缓存命中率非零；token 记 0（已省下，不计费）。
+                record_api_call(feature="chat", from_cache=True, model_name=model_name, latency_ms=0)
                 await save_message(session_id, "user", message, user_id=user_id)
                 yield sse_event("cache_hit", {})
                 content = cached["content"]
@@ -188,7 +192,8 @@ async def chat_stream(
                 user_id=user_id,
             )
 
-            cache.set(
+            await asyncio.to_thread(
+                cache.set,
                 cache_context,
                 {
                     "content": full_reply,

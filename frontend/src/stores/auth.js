@@ -12,10 +12,20 @@ const TOKEN_KEY = 'wm_access_token'
 const REFRESH_KEY = 'wm_refresh_token'
 const USER_KEY = 'wm_user'
 
+function _readStoredUser() {
+  // localStorage 被外部写坏时 JSON.parse 会抛异常导致整站白屏；容错回退 null。
+  try {
+    return JSON.parse(localStorage.getItem(USER_KEY) || 'null')
+  } catch {
+    localStorage.removeItem(USER_KEY)
+    return null
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const accessToken = ref(localStorage.getItem(TOKEN_KEY) || '')
   const refreshToken = ref(localStorage.getItem(REFRESH_KEY) || '')
-  const user = ref(JSON.parse(localStorage.getItem(USER_KEY) || 'null'))
+  const user = ref(_readStoredUser())
   let logoutPromise = null
   let refreshPromise = null
   let authVersion = 0
@@ -94,10 +104,16 @@ export const useAuthStore = defineStore('auth', () => {
     }
 
     authVersion += 1
+    // 显式登出时先记住 refresh token，用于服务端吊销其 jti。
+    const revokeToken = remoteCleanup ? refreshToken.value : ''
     if (!remoteCleanup) _clearCredentials()
 
     logoutPromise = (async () => {
       try {
+        if (revokeToken) {
+          // 尽力吊销服务端 refresh jti；失败不阻断本地登出。
+          await http.post('/auth/logout', { refreshToken: revokeToken }, { silent: true }).catch(() => {})
+        }
         const { resetBusinessStores } = await import('./session.js')
         await resetBusinessStores({ remoteCleanup })
       } finally {
@@ -113,7 +129,7 @@ export const useAuthStore = defineStore('auth', () => {
     return accessToken.value
   }
 
-  /** 启动时用 refresh 同步角色与有效会话，失败则清凭据 */
+  /** 启动时用 refresh 同步角色与有效会话；仅认证失效才清凭据，网络抖动保留会话 */
   async function ensureSession() {
     if (!refreshToken.value) {
       if (accessToken.value) _clearCredentials()
@@ -122,8 +138,12 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await refresh()
       return true
-    } catch {
-      _clearCredentials()
+    } catch (err) {
+      // 只有 401（refresh 确实失效）才清凭据；网络/5xx 等瞬时错误保留 token，
+      // 避免后端重启或断网时把可恢复的会话强制登出。
+      if (err?.response?.status === 401 || err?.status === 401) {
+        _clearCredentials()
+      }
       return false
     }
   }

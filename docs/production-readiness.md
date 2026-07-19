@@ -6,7 +6,7 @@
 ## 结论
 
 当前判定仍为 **NO-GO**（多 worker / live RAG / 生产数据副本等外部门禁未关）。  
-**2026-07-17 代码审计批次**已关闭一批可本地修复缺陷（见 [bug-audit-2026-07-17.md](bug-audit-2026-07-17.md)）：知识库读路径隔离、Agent/ERP/Workflow SSE 终态、前端 stateVersion / detach、Selenium S-01~S-10 本地通过（193 后端 + 18 前端单测）。
+**2026-07-17 代码审计批次**已关闭一批可本地修复缺陷（审计清单已随修复完成归档移除，明细见 git 历史）：知识库读路径隔离、Agent/ERP/Workflow SSE 终态、前端 stateVersion / detach、Selenium S-01~S-10 本地通过（193 后端 + 18 前端单测）。
 
 状态仅使用以下四类：
 
@@ -27,6 +27,12 @@
 - 数据与 RAG：文档和切片同事务写删，数据库成为文档清单权威来源；BM25 按分类和数据库版本刷新；迁移兼容非 UUID 文档、孤儿切片与重复切片，不再静默丢数据。
 - 业务契约：ERP 服务端重算金额/天数并提供 owner、幂等和 fail-closed；Agent 配置真实控制模型、工具和步数，未接入通知不再伪装为可用；Prompt/Config 增加校验和乐观版本控制。
 - 监控与交付：预算使用 Redis 原子预留/结算，统计使用 PostgreSQL 聚合和统一定价；数据库时间统一存 UTC-naive，预算日界线、账本 TTL、监控分组与展示统一使用可配置业务时区；补齐前端容器、Nginx SSE 代理、readiness、CI 服务依赖和生产文档；登录页完成真实浏览器 smoke。
+
+### 2026-07-20 批次运维注意事项
+
+- **认证对 Redis fail-closed**：refresh token 采用一次性 jti 轮换/吊销，凭据登记在 Redis；Redis 不可用时登录与刷新返回 503（宁拒绝、不降级签发不可轮换的 token）。Redis 可用性告警必须覆盖认证链路。
+- **容器切换非 root 的升级步骤**：后端镜像改为 uid 10001（appuser）运行。全新部署卷属主自动正确；**旧部署已存在的 `wm_uploads`/`wm_hf_cache` 卷可能为 root 属主**，升级前需一次性 `chown -R 10001:10001`（可用临时 root 容器执行），否则上传与 HF 模型缓存写入失败。
+- **torch 2.6.0+cpu 锁文件为手动最小更新**（修复 CVE-2025-32434）：上线前必须在 Linux/CI 用 `scripts/regenerate_linux_cpu_lock.sh` 重新解析全部传递依赖并通过 `uv pip check`。
 
 ## P0：上线阻断
 

@@ -22,10 +22,23 @@ class TavilyClient:
         self._api_key: str = cfg.get("api_key", "")
         self._timeout: float = float(cfg.get("timeout", 30))
         self._max_results: int = int(cfg.get("max_results", 5))
+        # 复用连接池，避免每次搜索新建/销毁 TCP+TLS 连接
+        self._http: httpx.AsyncClient | None = None
 
     @property
     def is_configured(self) -> bool:
         return bool(self._api_key)
+
+    def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=self._timeout)
+        return self._http
+
+    async def aclose(self) -> None:
+        """关闭连接池（应用退出时调用）。"""
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     async def search(self, query: str) -> dict:
         """
@@ -49,10 +62,9 @@ class TavilyClient:
 
         logger.info("tavily:search", {"query": query, "max_results": self._max_results})
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(TAVILY_SEARCH_URL, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._get_http().post(TAVILY_SEARCH_URL, json=payload)
+        resp.raise_for_status()
+        return resp.json()
 
 
 def format_search_response(data: dict) -> str:
@@ -86,3 +98,11 @@ def get_tavily_client() -> TavilyClient:
     if _client is None:
         _client = TavilyClient()
     return _client
+
+
+async def close_tavily_client() -> None:
+    """关闭 TavilyClient 连接池（应用退出时调用）。"""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None

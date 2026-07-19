@@ -22,22 +22,48 @@ async def test_refresh_should_issue_tokens_with_current_database_role():
     with (
         patch(
             "app.routes.auth.decode_token",
-            return_value={"sub": "u-1", "username": "old-name", "role": "admin"},
+            return_value={"sub": "u-1", "username": "old-name", "role": "admin", "jti": "jti-1"},
         ),
         patch("app.routes.auth.get_user_by_id", new=AsyncMock(return_value=current)) as lookup,
+        patch("app.routes.auth.consume_refresh_jti", new=AsyncMock(return_value=True)) as consume,
         patch(
             "app.routes.auth._token_response",
-            side_effect=lambda user_id, username, role: {
-                "userId": user_id,
-                "username": username,
-                "role": role,
-            },
+            new=AsyncMock(
+                side_effect=lambda user_id, username, role: {
+                    "userId": user_id,
+                    "username": username,
+                    "role": role,
+                }
+            ),
         ),
     ):
         response = await refresh(request)
 
     lookup.assert_awaited_once_with("u-1")
+    consume.assert_awaited_once_with("jti-1", "u-1")
     assert response == {"userId": "u-1", "username": "renamed", "role": "user"}
+
+
+@pytest.mark.asyncio
+async def test_refresh_should_reject_reused_or_rotated_token():
+    """旧 jti 已被轮换/吊销时，refresh 必须 401，不再签发新 token。"""
+    current = StoredUser(user_id="u-1", username="u", password="", role="user")
+    request = RefreshRequest(refreshToken="x" * 10)
+
+    with (
+        patch(
+            "app.routes.auth.decode_token",
+            return_value={"sub": "u-1", "jti": "stale"},
+        ),
+        patch("app.routes.auth.get_user_by_id", new=AsyncMock(return_value=current)),
+        patch("app.routes.auth.consume_refresh_jti", new=AsyncMock(return_value=False)),
+        patch("app.routes.auth._token_response", new=AsyncMock()) as issue,
+    ):
+        response = await refresh(request)
+
+    assert response.status_code == 401
+    assert json.loads(response.body)["error"]["code"] == "INVALID_TOKEN"
+    issue.assert_not_awaited()
 
 
 @pytest.mark.asyncio

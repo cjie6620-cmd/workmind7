@@ -97,11 +97,12 @@ def build_weekly_report():
     async def generate_report(state: WeeklyReportState):
         """节点4：生成周报"""
         logger.info("workflow:weekly → generateReport")
-        feedback = f"\n\n注意事项：{state['human_feedback']}" if state.get("human_feedback") else ""
+        # 用户反馈作为模板「值」注入，不拼进模板字符串；否则反馈中的 {} 会被当作模板变量解析导致崩溃。
+        feedback_note = f"\n\n注意事项：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (
             ChatPromptTemplate.from_messages(
                 [
-                    ("system", f"你是专业的报告撰写助手，生成结构清晰的周报。{feedback}"),
+                    ("system", "你是专业的报告撰写助手，生成结构清晰的周报。{feedback_note}"),
                     (
                         "human",
                         """部门：{dept}
@@ -135,6 +136,7 @@ def build_weekly_report():
                     "dept": state.get("dept", "研发部"),
                     "highlights": state["highlights"],
                     "risks": state["risks"],
+                    "feedback_note": feedback_note,
                 }
             )
         }
@@ -238,11 +240,11 @@ def build_meeting_minutes():
     async def generate_minutes(state: MeetingMinutesState):
         logger.info("workflow:meeting → generateMinutes")
         today = business_date().strftime("%Y/%m/%d")
-        feedback = f"\n修改意见：{state['human_feedback']}" if state.get("human_feedback") else ""
+        feedback_note = f"\n修改意见：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (
             ChatPromptTemplate.from_messages(
                 [
-                    ("system", f"你是会议纪要撰写助手，生成正式会议纪要。{feedback}"),
+                    ("system", "你是会议纪要撰写助手，生成正式会议纪要。{feedback_note}"),
                     (
                         "human",
                         """会议名称：{title}
@@ -271,6 +273,7 @@ def build_meeting_minutes():
                     "attendees": state["attendees"],
                     "conclusions": state["conclusions"],
                     "action_items": state["action_items"],
+                    "feedback_note": feedback_note,
                 }
             )
         }
@@ -355,13 +358,13 @@ def build_email_polish():
 
     async def polish_email(state: EmailPolishState):
         logger.info("workflow:email → polishEmail")
-        feedback = f"\n用户要求：{state['human_feedback']}" if state.get("human_feedback") else ""
+        feedback_note = f"\n用户要求：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (
             ChatPromptTemplate.from_messages(
                 [
                     (
                         "system",
-                        f"你是专业邮件润色助手，根据分析结果优化邮件。{feedback}\n保持原意，不改变核心内容，只优化表达。输出完整的润色后邮件，包括称呼、正文、结尾。",
+                        "你是专业邮件润色助手，根据分析结果优化邮件。{feedback_note}\n保持原意，不改变核心内容，只优化表达。输出完整的润色后邮件，包括称呼、正文、结尾。",
                     ),
                     (
                         "human",
@@ -385,6 +388,7 @@ def build_email_polish():
                     "draft": state["draft"],
                     "purpose": state["purpose"],
                     "issues": state["issues"],
+                    "feedback_note": feedback_note,
                 }
             )
         }
@@ -467,13 +471,13 @@ def build_prd_skeleton():
 
     async def generate_prd(state: PrdSkeletonState):
         logger.info("workflow:prd → generatePrd")
-        feedback = f"\n补充说明：{state['human_feedback']}" if state.get("human_feedback") else ""
+        feedback_note = f"\n补充说明：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (
             ChatPromptTemplate.from_messages(
                 [
                     (
                         "system",
-                        f"你是产品经理助手，生成结构化 PRD 文档骨架。{feedback}\n输出完整的 Markdown 格式 PRD，各章节有具体内容，不要只写标题。",
+                        "你是产品经理助手，生成结构化 PRD 文档骨架。{feedback_note}\n输出完整的 Markdown 格式 PRD，各章节有具体内容，不要只写标题。",
                     ),
                     (
                         "human",
@@ -504,6 +508,7 @@ def build_prd_skeleton():
                     "description": state["description"],
                     "features": state["features"],
                     "constraints": state["constraints"],
+                    "feedback_note": feedback_note,
                 }
             )
         }

@@ -64,11 +64,12 @@ async def _get_chunk_version(category=None) -> tuple[int, object]:
     return (int(row[0] or 0), row[1])
 
 
-async def _load_all_chunks(category=None):
+async def _load_all_chunks(category=None, owner_user_id=None):
     """
-    从 PostgreSQL 加载所有 chunk 文本，转为 LangChain Document 列表
+    从 PostgreSQL 加载 chunk 文本，转为 LangChain Document 列表
 
-    用于构建 BM25 索引。
+    用于构建 BM25 索引。owner_user_id 传入时把过滤下推到 SQL，使 BM25 索引按
+    上传者隔离，避免召回被其他租户文档挤占（NULL owner 为共享文档，对所有人可见）。
     """
     from sqlalchemy import text
 
@@ -76,11 +77,15 @@ async def _load_all_chunks(category=None):
         sql = """
             SELECT id, doc_id, chunk_index, content, metadata
             FROM rag_chunks
+            WHERE 1=1
         """
         params = {}
         if category:
-            sql += " WHERE metadata->>'category' = :category"
+            sql += " AND metadata->>'category' = :category"
             params["category"] = category
+        if owner_user_id is not None:
+            sql += " AND (metadata->>'ownerUserId' IS NULL OR metadata->>'ownerUserId' = :owner_user_id)"
+            params["owner_user_id"] = str(owner_user_id)
 
         sql += " ORDER BY doc_id, chunk_index"
         result = await session.execute(text(sql), params)
@@ -115,17 +120,27 @@ def _jieba_tokenize(text: str) -> list:
     return list(jieba.cut(text))
 
 
-async def _build_bm25_retriever(category=None):
+def _build_bm25_from_documents(docs, k):
+    """纯 CPU 的 BM25 构建（jieba 分词 + 索引），放线程池执行。"""
+    return BM25Retriever.from_documents(
+        docs,
+        k=k,
+        preprocess_func=_jieba_tokenize,
+    )
+
+
+async def _build_bm25_retriever(category=None, owner_user_id=None):
     """构建 BM25Retriever（从数据库加载 chunk，用 jieba 分词）"""
-    docs = await _load_all_chunks(category)
+    docs = await _load_all_chunks(category, owner_user_id)
     if not docs:
         logger.warn("hybrid: no chunks for BM25 index")
         return None
 
-    retriever = BM25Retriever.from_documents(
+    # jieba 分词 + 建索引是 CPU 密集操作，放线程池避免阻塞事件循环
+    retriever = await asyncio.to_thread(
+        _build_bm25_from_documents,
         docs,
-        k=config["rag"]["bm25_recall_k"],
-        preprocess_func=_jieba_tokenize,
+        config["rag"]["bm25_recall_k"],
     )
 
     logger.info(
@@ -138,10 +153,12 @@ async def _build_bm25_retriever(category=None):
     return retriever
 
 
-async def _get_cached_bm25(category=None):
-    """按分类和数据库版本读取 BM25；同分类并发只允许一个重建任务。"""
-    cache_key = category or None
-    version = await _get_chunk_version(cache_key)
+async def _get_cached_bm25(category=None, owner_user_id=None):
+    """按分类、上传者和数据库版本读取 BM25；同一 scope 并发只允许一个重建任务。"""
+    category_key = category or None
+    cache_key = (category_key, owner_user_id if owner_user_id is not None else None)
+    # 版本按分类检测切片增删，任一变化都会让该分类下所有 owner 缓存重建。
+    version = await _get_chunk_version(category_key)
     cached = _bm25_cache.get(cache_key)
     if cached and cached.version == version:
         return cached.retriever
@@ -149,12 +166,12 @@ async def _get_cached_bm25(category=None):
     lock = _bm25_locks.setdefault(cache_key, asyncio.Lock())
     async with lock:
         # 等锁期间其他协程可能已完成重建，因此再次读取 DB 版本并检查缓存。
-        version = await _get_chunk_version(cache_key)
+        version = await _get_chunk_version(category_key)
         cached = _bm25_cache.get(cache_key)
         if cached and cached.version == version:
             return cached.retriever
 
-        retriever = await _build_bm25_retriever(cache_key)
+        retriever = await _build_bm25_retriever(category_key, owner_user_id)
         _bm25_cache[cache_key] = _BM25CacheEntry(version=version, retriever=retriever)
         return retriever
 
@@ -167,7 +184,7 @@ def mark_bm25_stale():
     logger.info("hybrid: BM25 index marked stale")
 
 
-async def get_hybrid_retriever(category=None):
+async def get_hybrid_retriever(category=None, owner_user_id=None):
     """
     获取混合检索器
 
@@ -177,6 +194,8 @@ async def get_hybrid_retriever(category=None):
     1. 检查 BM25 索引是否需要重建
     2. 构建向量检索器（PGVectorRetriever）
     3. 组合为 EnsembleRetriever（内置 RRF）
+
+    owner_user_id 传入时向量与 BM25 均按上传者隔离，避免召回饥饿。
     """
     global _bm25_retriever, _bm25_category, _bm25_stale
 
@@ -184,7 +203,7 @@ async def get_hybrid_retriever(category=None):
         _bm25_cache.clear()
         _bm25_stale = False
 
-    bm25_retriever = await _get_cached_bm25(category)
+    bm25_retriever = await _get_cached_bm25(category, owner_user_id)
     _bm25_retriever = bm25_retriever
     _bm25_category = category
 
@@ -194,6 +213,7 @@ async def get_hybrid_retriever(category=None):
     vector_retriever = PGVectorRetriever(
         k=rag_config["vector_recall_k"],
         category=category,
+        owner_user_id=owner_user_id,
     )
 
     # 如果 BM25 索引为空（无文档），直接返回向量检索器

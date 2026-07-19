@@ -158,14 +158,17 @@ async function doParse() {
 
 <!-- FormField 内联子组件 -->
 <script>
+import { h } from 'vue'
+
+// 用渲染函数而非 template 字符串：生产 runtime-only 构建不含模板编译器。
 const FormField = {
   props: ['label', 'value', 'highlight'],
-  template: `
-    <div class="form-field-item">
-      <div class="ff-label">{{ label }}</div>
-      <div class="ff-value" :class="{ highlight }">{{ value }}</div>
-    </div>
-  `,
+  render() {
+    return h('div', { class: 'form-field-item' }, [
+      h('div', { class: 'ff-label' }, this.label),
+      h('div', { class: ['ff-value', { highlight: this.highlight }] }, this.value),
+    ])
+  },
 }
 export default { components: { FormField } }
 </script>

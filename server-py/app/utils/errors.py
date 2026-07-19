@@ -56,6 +56,14 @@ def classify_error(err):
     # 尝试从异常对象获取状态码
     status = getattr(err, "status_code", None) or getattr(err, "status", None)
 
+    if status == 402:
+        return AppError(
+            "预算超限",
+            code="BUDGET_EXCEEDED",
+            status_code=402,
+            retryable=False,
+            user_message="今日 AI 用量已达上限，请稍后再试或联系管理员",
+        )
     if status == 429:
         return AppError(
             "API 限流", code="RATE_LIMIT", status_code=429, retryable=True, user_message="请求太频繁，请稍后重试"

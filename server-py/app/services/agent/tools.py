@@ -93,6 +93,10 @@ async def read_doc(question: str) -> str:
         from ...utils.agent_context import get_agent_user_id
 
         owner_user_id = get_agent_user_id()
+        # fail-closed：无法确定归属用户时拒绝检索，避免退化为跨用户全库检索。
+        if not owner_user_id:
+            logger.warning("tool:read_doc missing user scope, refusing")
+            return "无法确定用户身份，知识库检索已拒绝。"
         docs = await retrieve_docs(question, k=3, owner_user_id=owner_user_id, is_admin=False)
         if not docs:
             return f'知识库中未找到关于"{question}"的相关内容。'
@@ -268,7 +272,7 @@ async def write_report(title: str, content: str, format: str = "markdown") -> st
     if not user_id:
         return json.dumps({"success": False, "message": "无法确定报告归属用户"}, ensure_ascii=False)
 
-    meta = save_report(title, report, user_id)
+    meta = await save_report(title, report, user_id)
 
     return json.dumps(
         {

@@ -5,12 +5,13 @@ WorkMind AI Server - Python Edition  →  Mr.Chen AI Server
 采用 lifespan 上下文管理器处理启动和关闭逻辑。
 """
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from .config import config, validate_config
 from .middleware import setup_middleware
+from .utils.errors import AppError
 from .utils.logger import logger
 
 from .routes.health import health_router
@@ -85,6 +86,19 @@ async def lifespan(app: FastAPI):
             if strict_startup and embedding_required:
                 raise RuntimeError("生产启动失败：Embeddings 模型无法加载") from e
             print(f"[WARN] Embeddings 模型预加载失败：{e}", file=sys.stderr)
+
+        # 预加载 reranker（同 embeddings），避免首个 RAG 请求同步加载 ~560MB 模型卡死事件循环
+        print("Pre-loading reranker model...", file=sys.stderr)
+        try:
+            import asyncio
+            from .services.rag.reranker import get_reranker
+
+            await asyncio.to_thread(get_reranker)
+            print("Reranker model loaded.", file=sys.stderr)
+        except Exception as e:
+            if strict_startup and embedding_required:
+                raise RuntimeError("生产启动失败：Reranker 模型无法加载") from e
+            print(f"[WARN] Reranker 模型预加载失败（首个知识库查询将按需加载）：{e}", file=sys.stderr)
     else:
         print("[WARN] 未配置 EMBEDDING_MODEL，跳过 embeddings 预加载；知识库相关功能将不可用", file=sys.stderr)
 
@@ -166,13 +180,17 @@ async def lifespan(app: FastAPI):
     yield
     from .routes.workflow import shutdown_workflow_tasks
     from .routes.erp import shutdown_approval_tasks
+    from .routes.agent import shutdown_agent_tasks
 
     await shutdown_workflow_tasks()
     await shutdown_approval_tasks()
+    await shutdown_agent_tasks()
     await stop_flush_task()
     from .core.database import close_db
     from .core.redis_client import close_redis
+    from .clients.tavily_client import close_tavily_client
 
+    await close_tavily_client()
     await close_db()
     close_redis()
     logger.info("server shutdown")
@@ -192,6 +210,25 @@ app = FastAPI(
 
 # 配置中间件（CORS、限流、请求日志、Prompt 注入检测）
 setup_middleware(app)
+
+
+# ── 全局异常处理器：统一 {"error":{code,message}} 契约，避免纯文本 500 与细节泄露 ──
+@app.exception_handler(AppError)
+async def _handle_app_error(request: Request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.user_message}},
+    )
+
+
+@app.exception_handler(Exception)
+async def _handle_unexpected_error(request: Request, exc: Exception):
+    # 详细堆栈只进日志；对客户端返回通用文案，不泄露内部细节。
+    logger.error("unhandled exception", {"path": request.url.path, "errorType": type(exc).__name__})
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL_ERROR", "message": "服务器内部错误，请稍后重试"}},
+    )
 
 # ── 路由注册 ───────────────────────────────────────────────────
 app.include_router(health_router, prefix="/health", tags=["health"])

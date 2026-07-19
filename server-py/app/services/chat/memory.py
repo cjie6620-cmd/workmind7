@@ -36,19 +36,30 @@ def est_tokens(text=""):
 # ── 会话历史管理（PostgreSQL）───────────────────────────────
 
 
-async def get_history_db(session_id: str) -> List[dict]:
+async def get_history_db(session_id: str, limit: int | None = None) -> List[dict]:
     """
-    获取指定会话的所有历史消息（从 PostgreSQL）
+    获取指定会话的历史消息（从 PostgreSQL）
 
-    返回消息列表，按时间升序
+    返回消息列表，按时间升序。limit 传入时只取最近 limit 条（再按时间升序返回），
+    用于对话上下文构建，避免长会话每次全量拉回。
     """
     from sqlalchemy import select
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Conversation).where(Conversation.session_id == session_id).order_by(Conversation.created_at)
-        )
-        rows = result.scalars().all()
+        if limit is not None:
+            # 先按时间倒序取最近 limit 条，再在应用层反转为升序
+            recent = await session.execute(
+                select(Conversation)
+                .where(Conversation.session_id == session_id)
+                .order_by(Conversation.created_at.desc())
+                .limit(limit)
+            )
+            rows = list(reversed(recent.scalars().all()))
+        else:
+            result = await session.execute(
+                select(Conversation).where(Conversation.session_id == session_id).order_by(Conversation.created_at)
+            )
+            rows = list(result.scalars().all())
 
     return [
         {
@@ -149,29 +160,6 @@ async def set_message_feedback(message_id: str, user_id: str, rating: str) -> bo
         message.metadata_ = metadata
         await session.commit()
     return True
-
-
-async def save_messages_batch(session_id: str, messages: List[dict]):
-    """
-    批量保存消息到 PostgreSQL
-
-    参数：
-    - session_id: 会话ID
-    - messages: 消息列表 [{role, content, model, tokens}, ...]
-    """
-    async with async_session_factory() as session:
-        async with session.begin():
-            for msg in messages:
-                session.add(
-                    Conversation(
-                        session_id=session_id,
-                        role=msg["role"],
-                        content=msg["content"],
-                        model=msg.get("model"),
-                        tokens=msg.get("tokens"),
-                    )
-                )
-        await session.commit()
 
 
 async def clear_history(session_id: str, user_id: str | None = None):
@@ -403,52 +391,79 @@ def clear_history_sync(session_id):
     _memory_store.pop(session_id, None)
 
 
-async def list_sessions(user_id: str | None = None) -> List[dict]:
-    """获取会话列表（可按 user_id 过滤），包含标题和消息数"""
+async def list_sessions_by_prefix(
+    user_id: str | None,
+    prefix: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    default_title: str = "新对话",
+    title_len: int = 20,
+) -> List[dict]:
+    """按会话 ID 前缀分页返回会话列表（标题、消息数）。
+
+    避免 N+1：先聚合分页取会话，再用一条 DISTINCT ON 查询批量取各会话首条 user 消息作标题。
+    """
     from sqlalchemy import select, func
 
     async with async_session_factory() as session:
-        stmt = (
+        grouped = (
             select(
                 Conversation.session_id,
                 func.count(Conversation.id).label("message_count"),
                 func.min(Conversation.created_at).label("created_at"),
             )
+            .where(Conversation.session_id.like(f"{prefix}%"))
             .group_by(Conversation.session_id)
             .order_by(func.min(Conversation.created_at).desc())
+            .limit(limit)
+            .offset(offset)
         )
         if user_id:
-            stmt = stmt.where(Conversation.user_id == user_id)
+            grouped = grouped.where(Conversation.user_id == user_id)
+        agg_rows = (await session.execute(grouped)).all()
 
-        result = await session.execute(stmt)
-        rows = result.all()
-
-        sessions = []
-        for row in rows:
-            session_id = row[0]
-            # 获取第一条用户消息作为标题
-            title = "新对话"
+        session_ids = [row[0] for row in agg_rows]
+        titles: dict[str, str] = {}
+        if session_ids:
+            # DISTINCT ON (session_id) + ORDER BY session_id, created_at → 每会话首条 user 消息
             title_stmt = (
-                select(Conversation.content)
-                .where(Conversation.session_id == session_id)
+                select(Conversation.session_id, Conversation.content)
+                .where(Conversation.session_id.in_(session_ids))
                 .where(Conversation.role == "user")
-                .order_by(Conversation.created_at)
-                .limit(1)
+                .order_by(Conversation.session_id, Conversation.created_at)
+                .distinct(Conversation.session_id)
             )
             if user_id:
                 title_stmt = title_stmt.where(Conversation.user_id == user_id)
-            r = await session.execute(title_stmt)
-            first_msg = r.scalar_one_or_none()
-            if first_msg:
-                title = first_msg[:20] + ("..." if len(first_msg) > 20 else "")
+            for sid, content in (await session.execute(title_stmt)).all():
+                titles[sid] = content
 
-            sessions.append(
-                {
-                    "id": session_id,
-                    "title": title,
-                    "messageCount": row[1],
-                    "createdAt": row[2].isoformat() if row[2] else None,
-                }
-            )
-
+    sessions = []
+    for row in agg_rows:
+        sid = row[0]
+        first_msg = titles.get(sid)
+        title = default_title
+        if first_msg:
+            title = first_msg[:title_len] + ("..." if len(first_msg) > title_len else "")
+        sessions.append(
+            {
+                "id": sid,
+                "title": title,
+                "messageCount": row[1],
+                "createdAt": row[2].isoformat() if row[2] else None,
+            }
+        )
     return sessions
+
+
+async def list_sessions(user_id: str | None = None, *, limit: int = 50, offset: int = 0) -> List[dict]:
+    """获取当前用户的对话会话列表（仅 session_ 前缀，排除知识库/Agent 会话）。"""
+    return await list_sessions_by_prefix(
+        user_id,
+        "session_",
+        limit=limit,
+        offset=offset,
+        default_title="新对话",
+        title_len=20,
+    )

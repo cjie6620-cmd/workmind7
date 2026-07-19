@@ -115,10 +115,28 @@ def _build_agent_graph(runtime_config: dict | None = None):
         )
         return {"messages": [response], "steps": state.get("steps", 0) + 1}
 
+    async def finalize_node(state: AgentState):
+        """步数用尽仍有未完成工具调用时，用无工具模型强制产出一个收尾回答。"""
+        response = await runtime_model.ainvoke(
+            [
+                SystemMessage(system_prompt),
+                *state["messages"],
+                HumanMessage(
+                    "已达到工具调用步数上限。请基于以上已获得的信息直接给出尽可能完整的回答，"
+                    "不要再请求调用任何工具。"
+                ),
+            ]
+        )
+        return {"messages": [response]}
+
     def should_continue(state: AgentState):
         last = state["messages"][-1]
         if state.get("steps", 0) >= max_steps:
             logger.warning("agent: max steps reached", {"steps": state["steps"], "maxSteps": max_steps})
+            # 末条仍带未执行的 tool_calls 时，不能直接结束（否则无最终回答报错）；
+            # 转到 finalize 节点用无工具模型强制收尾。
+            if enabled_tools and getattr(last, "tool_calls", None):
+                return "finalize"
             return "__end__"
         return "tools" if enabled_tools and last.tool_calls else "__end__"
 
@@ -126,11 +144,15 @@ def _build_agent_graph(runtime_config: dict | None = None):
     graph.add_node("agent", agent_node)
     if enabled_tools:
         graph.add_node("tools", ToolNode(enabled_tools))
+        graph.add_node("finalize", finalize_node)
     graph.add_edge(START, "agent")
-    edge_map: dict[Hashable, str] = {"tools": "tools", "__end__": END} if enabled_tools else {"__end__": END}
+    edge_map: dict[Hashable, str] = (
+        {"tools": "tools", "finalize": "finalize", "__end__": END} if enabled_tools else {"__end__": END}
+    )
     graph.add_conditional_edges("agent", should_continue, edge_map)
     if enabled_tools:
         graph.add_edge("tools", "agent")
+        graph.add_edge("finalize", END)
     return graph.compile()
 
 
@@ -211,6 +233,12 @@ async def run_agent(task, emit_event, runtime_config: dict | None = None):
                     final_answer += msg.content
                     await emit_event("token", {"token": msg.content})
 
+            # finalize 节点：步数用尽后的无工具收尾回答，token 计入 final_answer
+            elif node == "finalize":
+                if msg.content:
+                    final_answer += msg.content
+                    await emit_event("token", {"token": msg.content})
+
             # tools 节点：ToolMessage（完整工具结果）
             elif node == "tools" and hasattr(msg, "tool_call_id"):
                 result = msg.content
@@ -248,7 +276,14 @@ async def run_agent(task, emit_event, runtime_config: dict | None = None):
     except Exception as err:
         tb_str = traceback.format_exc()
         logger.error("agent: execution failed", {"error": str(err), "traceback": tb_str})
-        await emit_event("error", {"message": str(err)})
+        # 配置校验类错误对管理员可操作，原样返回；其余走分类得到通用文案，避免泄露内部细节。
+        if isinstance(err, ValueError):
+            message = str(err)
+        else:
+            from ...utils.errors import classify_error
+
+            message = classify_error(err).user_message
+        await emit_event("error", {"message": message})
 
 
 def get_tool_list():

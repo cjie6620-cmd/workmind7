@@ -4,6 +4,7 @@
 包含：CORS、Redis 分布式限流、请求日志、JWT 认证、Prompt 注入检测
 """
 
+import asyncio
 import re
 import time
 import uuid
@@ -85,20 +86,29 @@ def _rate_limit_key(scope: Scope, path: str) -> str:
     return f"rate:ip:{ip}:{path}"
 
 
-def _check_rate_limit(scope: Scope, path: str) -> bool:
-    """Redis 滑动窗口限流；昂贵路径在 Redis 不可用时 fail-closed。"""
+def _rate_limit_incr(key: str) -> int:
+    """固定窗口计数：仅在窗口首个请求设置 TTL，让窗口能自然过期。
+
+    ❌ 每次请求都 EXPIRE 会让活跃用户的计数键永不过期、累积后被长期误封。
+    ✅ 只在 INCR 结果为 1（窗口首个请求）时设置一次 TTL。
+    """
+    from .core.redis_client import get_redis
+
+    r = get_redis()
+    count = r.incr(key)
+    if count == 1:
+        r.expire(key, RATE_WINDOW_SEC)
+    return int(count)
+
+
+async def _check_rate_limit(scope: Scope, path: str) -> bool:
+    """固定窗口限流；同步 redis-py 放线程池，避免阻塞事件循环。"""
     limit = STRICT_RATE_LIMIT if path in STRICT_RATE_PATHS else DEFAULT_RATE_LIMIT
     key = _rate_limit_key(scope, path)
 
     try:
-        from .core.redis_client import get_redis
-
-        r = get_redis()
-        pipe = r.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, RATE_WINDOW_SEC)
-        count, _ = pipe.execute()
-        return int(count) <= limit
+        count = await asyncio.to_thread(_rate_limit_incr, key)
+        return count <= limit
     except Exception:
         # 生产昂贵路径 fail-closed；测试环境保留进程内回退，避免无 Redis 时整仓集成不可用。
         import os
@@ -130,6 +140,22 @@ class TokenBucket:
 
 
 _fallback_bucket = TokenBucket()
+
+# 安全响应头（纵深防御）：防 MIME 嗅探、点击劫持、referrer 泄露；生产追加 HSTS。
+_SECURITY_HEADERS: list[tuple[bytes, bytes]] = [
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"no-referrer"),
+]
+if config["app"]["env"] == "production":
+    _SECURITY_HEADERS.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
+
+
+def _append_security_headers(headers: list) -> None:
+    existing = {name.lower() for name, _ in headers}
+    for name, value in _SECURITY_HEADERS:
+        if name not in existing:
+            headers.append((name, value))
 
 
 class StreamingSafeMiddleware:
@@ -167,7 +193,7 @@ class StreamingSafeMiddleware:
                 state["auth_user"] = auth_user
 
         # 健康探针必须豁免限流：Docker/K8s 高频探活，否则会把容器打成 unhealthy（T2）
-        if not path.startswith("/health") and not _check_rate_limit(scope, path):
+        if not path.startswith("/health") and not await _check_rate_limit(scope, path):
             resp = JSONResponse(
                 status_code=429,
                 content={"error": {"code": "RATE_LIMIT", "message": "请求太频繁，请稍后重试"}},
@@ -181,6 +207,7 @@ class StreamingSafeMiddleware:
                 if message["type"] == "http.response.start":
                     headers = list(message.get("headers", []))
                     headers.append((b"x-trace-id", trace_id.encode()))
+                    _append_security_headers(headers)
                     message["headers"] = headers
                 await send(message)
 
@@ -196,6 +223,7 @@ class StreamingSafeMiddleware:
                 status_code = message.get("status", 0)
                 headers = list(message.get("headers", []))
                 headers.append((b"x-trace-id", trace_id.encode()))
+                _append_security_headers(headers)
                 message["headers"] = headers
             await send(message)
 
@@ -209,7 +237,13 @@ class StreamingSafeMiddleware:
 
 
 def setup_middleware(app: FastAPI):
-    """注册所有中间件"""
+    """注册所有中间件。
+
+    Starlette 中「后添加者更外层」。先加 StreamingSafeMiddleware、后加 CORS，
+    使 CORS 成为最外层：这样 StreamingSafe 短路的 401/429 响应也会经过 CORS 补上跨域头，
+    浏览器才能读到错误体（否则前端只会看到网络错误，无法区分未登录/被限流）。
+    """
+    app.add_middleware(StreamingSafeMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config["app"]["allowed_origins"],
@@ -217,4 +251,3 @@ def setup_middleware(app: FastAPI):
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-Trace-Id", "X-API-Key"],
     )
-    app.add_middleware(StreamingSafeMiddleware)

@@ -8,6 +8,7 @@ LLM 调用拦截器模块
 所有业务代码无需修改。
 """
 
+import asyncio
 import sys
 import time
 from types import FrameType
@@ -169,6 +170,9 @@ class MonitoredChatOpenAI(ChatOpenAI):
                     output_tokens = chunk_output
                     usage_known = True
                 yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            # 客户端断连/停止生成不是模型错误，不计入错误率，避免掩盖真实 Provider 故障。
+            raise
         except BaseException:
             has_error = True
             raise

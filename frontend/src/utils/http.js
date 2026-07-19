@@ -89,6 +89,11 @@ http.interceptors.response.use(
       }
     }
 
+    // silent 请求由调用方自行提示，拦截器不再重复 toast（避免同一错误弹两条）
+    if (error.config?.silent) {
+      return Promise.reject(error)
+    }
+
     if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
       appStore.toast.error('请求超时，请稍后重试')
     } else if (error.response) {
@@ -101,7 +106,7 @@ http.interceptors.response.use(
         appStore.toast.warning('今日预算已用尽，请联系管理员')
       } else if (status >= 500) {
         appStore.toast.error('服务器异常，请稍后重试')
-      } else if (status !== 401 && !error.config?.silent) {
+      } else if (status !== 401) {
         appStore.toast.error(msg)
       }
     } else {

@@ -7,6 +7,8 @@
 W0b-1b 将接入 users 表与前端 LoginView。
 """
 
+import uuid
+
 import jwt
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -17,8 +19,10 @@ from ..auth.jwt import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    refresh_token_ttl_seconds,
 )
 from ..auth.models import LoginRequest, RefreshRequest, TokenResponse
+from ..auth.token_store import consume_refresh_jti, register_refresh_jti, revoke_refresh_jti
 from ..auth.users import AuthStoreUnavailable, authenticate as authenticate_user, get_user_by_id
 from ..utils.logger import logger
 
@@ -43,10 +47,13 @@ def _auth_store_unavailable_response(operation: str, error: Exception) -> JSONRe
     )
 
 
-def _token_response(user_id: str, username: str, role: str) -> dict:
-    """构建 token 响应体"""
+async def _token_response(user_id: str, username: str, role: str) -> dict:
+    """构建 token 响应体，并把新 refresh token 的 jti 登记为有效凭据。"""
     access = create_access_token(user_id, username, role)
-    refresh = create_refresh_token(user_id, username, role)
+    jti = uuid.uuid4().hex
+    refresh = create_refresh_token(user_id, username, role, jti)
+    # 先登记再返回：登记失败则不签发无法后续轮换的 refresh token。
+    await register_refresh_jti(jti, user_id, refresh_token_ttl_seconds())
     body = TokenResponse(
         accessToken=access,
         refreshToken=refresh,
@@ -69,18 +76,22 @@ async def login(req: LoginRequest):
             status_code=401,
             content={"error": {"code": "INVALID_CREDENTIALS", "message": "用户名或密码错误"}},
         )
-    return _token_response(record.user_id, record.username, record.role)
+    try:
+        return await _token_response(record.user_id, record.username, record.role)
+    except Exception as err:
+        return _auth_store_unavailable_response("login", err)
 
 
 @auth_router.post("/refresh")
 async def refresh(req: RefreshRequest):
-    """使用 refresh token 换取新的 access + refresh token"""
+    """使用 refresh token 换取新的 access + refresh token（一次性轮换旧 jti）。"""
     try:
         payload = decode_token(req.refreshToken, expected_type=TOKEN_TYPE_REFRESH)
         subject = payload.get("sub")
         if subject is None or not str(subject).strip():
             raise jwt.InvalidTokenError("refresh token 缺少 subject")
         user_id = str(subject)
+        jti = str(payload.get("jti") or "")
     except jwt.PyJWTError:
         return JSONResponse(
             status_code=401,
@@ -97,4 +108,34 @@ async def refresh(req: RefreshRequest):
             content={"error": {"code": "INVALID_TOKEN", "message": "refresh token 对应用户不存在"}},
         )
 
-    return _token_response(current_user.user_id, current_user.username, current_user.role)
+    # 一次性消费旧 jti：已被轮换/吊销/重放的 token 在此失败。
+    try:
+        rotated = await consume_refresh_jti(jti, user_id)
+    except Exception as err:
+        return _auth_store_unavailable_response("refresh", err)
+    if not rotated:
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "INVALID_TOKEN", "message": "refresh token 已失效，请重新登录"}},
+        )
+
+    try:
+        return await _token_response(current_user.user_id, current_user.username, current_user.role)
+    except Exception as err:
+        return _auth_store_unavailable_response("refresh", err)
+
+
+@auth_router.post("/logout")
+async def logout(req: RefreshRequest):
+    """服务端登出：吊销该 refresh token 的 jti，使其立即失效（幂等）。"""
+    try:
+        payload = decode_token(req.refreshToken, expected_type=TOKEN_TYPE_REFRESH)
+        jti = str(payload.get("jti") or "")
+    except jwt.PyJWTError:
+        # 无效/过期 token 无需吊销，登出视为成功（幂等）。
+        return {"success": True}
+    try:
+        await revoke_refresh_jti(jti)
+    except Exception as err:
+        logger.warning("认证存储登出吊销失败", {"errorType": type(err).__name__})
+    return {"success": True}

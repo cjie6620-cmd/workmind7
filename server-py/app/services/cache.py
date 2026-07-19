@@ -1,10 +1,14 @@
 """
 精确缓存模块（Redis 实现）
 
-利用 Redis 存储 + 原生 LRU 淘汰策略：
-- Key 前缀 cache:，避免与其他业务冲突
+利用 Redis 存储 + TTL 淘汰：
+- Key 前缀 cache:v2:，与预算/工作流/报告等业务键前缀区分
 - TTL 由 Redis setex 原生管理
-- 淘汰策略依赖 Redis 配置 maxmemory-policy allkeys-lru
+- 生产 Redis 配置 maxmemory + maxmemory-policy=volatile-lru：按 LRU 淘汰带 TTL 的键，
+  缓存键量大且访问稀疏，通常最先被淘汰。
+  ⚠️ 预算账本/工作流快照/报告同库且同样带 TTL，极端内存压力下也可能被淘汰
+  （尽力而为、非硬保障），maxmemory 必须留足余量并监控内存水位；
+  禁止 allkeys-lru（连无 TTL 的键也会淘汰，风险更大）。
 - 统计信息（hits/misses/saved_tokens）用 Redis Hash 存储
 """
 

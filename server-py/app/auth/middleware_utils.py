@@ -23,6 +23,8 @@ def is_public_api_path(path: str, method: str) -> bool:
         return True
     if path == "/api/auth/refresh":
         return True
+    if path == "/api/auth/logout":
+        return True
     return False
 
 

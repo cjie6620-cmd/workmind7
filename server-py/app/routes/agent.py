@@ -17,6 +17,7 @@ Agent 基于 ReAct 模式（Reasoning + Acting）：
 """
 
 import asyncio
+import os
 import uuid
 from urllib.parse import quote
 
@@ -44,6 +45,21 @@ agent_router = APIRouter()
 
 # 强引用后台 Agent 任务，避免客户端断连后被 GC；断连只停推送，不取消业务。
 _agent_tasks: set[asyncio.Task] = set()
+
+# Agent 单次运行的墙钟上限（秒），避免多步 + 重试叠加后无限占用预算与连接
+AGENT_MAX_WALL_SECONDS = int(os.environ.get("AGENT_MAX_WALL_SECONDS", "300"))
+
+
+async def shutdown_agent_tasks(timeout_seconds: float = 20) -> None:
+    """优雅停机：给在途 Agent 短暂完成窗口（保存回答），超时后取消。"""
+    pending = [task for task in _agent_tasks if not task.done()]
+    if not pending:
+        return
+    _, still_pending = await asyncio.wait(pending, timeout=timeout_seconds)
+    for task in still_pending:
+        task.cancel()
+    if still_pending:
+        await asyncio.gather(*still_pending, return_exceptions=True)
 
 
 def _report_content_disposition(title: str) -> str:
@@ -133,13 +149,19 @@ async def agent_run(
         try:
             async with agent_user_scope(user.user_id):
                 await save_message(session_id, "user", task, user_id=user.user_id)
-                if runtime_config is None:
-                    await run_agent(task, collect_event)
-                else:
-                    await run_agent(task, collect_event, runtime_config)
+                # 墙钟超时保护：超过上限强制结束，避免任务无限占用预算与连接
+                async with asyncio.timeout(AGENT_MAX_WALL_SECONDS):
+                    if runtime_config is None:
+                        await run_agent(task, collect_event)
+                    else:
+                        await run_agent(task, collect_event, runtime_config)
         except asyncio.CancelledError:
             logger.info("agent route: task cancelled", {"sessionId": session_id})
             raise
+        except TimeoutError:
+            failed_event.set()
+            logger.warning("agent route: task wall-clock timeout", {"sessionId": session_id})
+            await queue.put(sse_event("error", {"message": "任务执行超时，请缩小任务范围后重试"}))
         except Exception as err:
             failed_event.set()
             logger.error("agent route: task failed", {"error": str(err)})
@@ -260,7 +282,7 @@ async def agent_reports(user: UserContext = Depends(get_current_user)):
     """列出当前用户 Agent 生成的报告（仅元数据）"""
     from ..services.agent.report_store import list_reports
 
-    return {"reports": list_reports(user.user_id)}
+    return {"reports": await list_reports(user.user_id)}
 
 
 @agent_router.get("/reports/{report_id}")
@@ -268,7 +290,7 @@ async def agent_report_detail(report_id: str, user: UserContext = Depends(get_cu
     """获取单个报告的完整内容"""
     from ..services.agent.report_store import get_report
 
-    report = get_report(report_id, user.user_id)
+    report = await get_report(report_id, user.user_id)
     if not report:
         return JSONResponse(status_code=404, content={"error": {"message": "报告不存在或已过期"}})
     return {"report": report}
@@ -280,7 +302,7 @@ async def agent_report_download(report_id: str, user: UserContext = Depends(get_
     from ..services.agent.report_store import get_report
     from fastapi.responses import Response
 
-    report = get_report(report_id, user.user_id)
+    report = await get_report(report_id, user.user_id)
     if not report:
         return JSONResponse(status_code=404, content={"error": {"message": "报告不存在或已过期"}})
     title = report["meta"]["title"]
@@ -297,7 +319,7 @@ async def agent_report_delete(report_id: str, user: UserContext = Depends(get_cu
     """删除报告"""
     from ..services.agent.report_store import delete_report
 
-    ok = delete_report(report_id, user.user_id)
+    ok = await delete_report(report_id, user.user_id)
     if not ok:
         return JSONResponse(status_code=500, content={"error": {"message": "删除失败"}})
     return {"success": True}
@@ -312,45 +334,22 @@ async def get_agent_history(session_id: str, user: UserContext = Depends(get_cur
 
 
 @agent_router.get("/sessions")
-async def get_agent_sessions(user: UserContext = Depends(get_current_user)):
-    """获取当前用户的 Agent 会话列表"""
-    from sqlalchemy import select, func
-    from ..core.database import async_session_factory
-    from ..models.entities import Conversation
+async def get_agent_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    user: UserContext = Depends(get_current_user),
+):
+    """获取当前用户的 Agent 会话列表（分页，无 N+1）"""
+    from ..services.chat.memory import list_sessions_by_prefix
 
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(
-                Conversation.session_id,
-                func.count(Conversation.id).label("msg_count"),
-                func.min(Conversation.created_at).label("created_at"),
-            )
-            .where(Conversation.session_id.like("agent_%"))
-            .where(Conversation.user_id == user.user_id)
-            .group_by(Conversation.session_id)
-            .order_by(func.min(Conversation.created_at).desc())
-        )
-        rows = result.all()
-
-        sessions = []
-        for row in rows:
-            sid = row[0]
-            r = await session.execute(
-                select(Conversation.content)
-                .where(Conversation.session_id == sid)
-                .where(Conversation.role == "user")
-                .order_by(Conversation.created_at)
-                .limit(1)
-            )
-            first_msg = r.scalar_one_or_none()
-            title = first_msg[:30] + ("..." if first_msg and len(first_msg) > 30 else "") if first_msg else "Agent 任务"
-            sessions.append(
-                {
-                    "id": sid,
-                    "title": title,
-                    "messageCount": row[1],
-                    "createdAt": row[2].isoformat() if row[2] else None,
-                }
-            )
-
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    sessions = await list_sessions_by_prefix(
+        user.user_id,
+        "agent_",
+        limit=limit,
+        offset=offset,
+        default_title="Agent 任务",
+        title_len=30,
+    )
     return {"sessions": sessions}

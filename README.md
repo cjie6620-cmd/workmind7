@@ -429,7 +429,7 @@ set E2E_BASE_URL=http://127.0.0.1:5173
 pytest -q
 ```
 
-审计与关闭证据见 [docs/bug-audit-2026-07-17.md](docs/bug-audit-2026-07-17.md)。
+2026-07-17 审计批次已全部关闭并归档（清单随修复完成从仓库移除，明细见 git 历史与 [docs/production-readiness.md](docs/production-readiness.md)）。
 
 ---
 

@@ -324,6 +324,18 @@ export const useWorkflowStore = defineStore('workflow', () => {
     clearPendingRun()
   }
 
+  // 仅断开 UI 推送、保留待恢复凭据（供 SPA 离开/返回后刷新恢复）；
+  // PENDING_RUN_KEY 只在显式取消/完成/重置时清除。
+  function detach() {
+    abortController?.abort()
+    abortController = null
+    running.value = false
+    if (pendingPollTimer) {
+      clearTimeout(pendingPollTimer)
+      pendingPollTimer = null
+    }
+  }
+
   async function cancelWorkflow() {
     const threadId = currentThreadId.value
     stopStream()
@@ -426,6 +438,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     nodeStates, nodeOutputs, running, paused,
     currentThreadId, intermediates, result, streamBuffer,
     loadTemplates, getTemplateMeta, selectTemplate, startWorkflow, resumeWorkflow,
-    restorePendingRun, cancelWorkflow, restartWorkflow, stopStream, reset,
+    restorePendingRun, cancelWorkflow, restartWorkflow, stopStream, detach, reset,
   }
 })

@@ -196,6 +196,12 @@ async def cancel_run(
     if not lock_token:
         return JSONResponse(status_code=409, content={"error": {"message": "工作流正在恢复，暂时无法取消"}})
     try:
+        # 取锁后复读，用最新快照写墓碑；对已终态运行幂等返回，避免把 completed 改写成 cancelled。
+        run = await get_workflow_run(thread_id)
+        if not run or run.get("userId") != user.user_id:
+            return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
+        if run.get("status") in {"completed", "failed", "cancelled"}:
+            return {"success": True, "status": run.get("status")}
         # 保留取消墓碑到 TTL，防止另一个 worker 的迟到结果重新写回可见状态。
         await save_workflow_run(thread_id, {**run, "status": "cancelled"})
         task = _workflow_tasks.get(thread_id)
@@ -337,6 +343,19 @@ async def start_workflow_stream(
                 await emit(sse_event("completed", {"threadId": thread_id, "result": result}))
         except asyncio.CancelledError:
             terminal["status"] = "cancelled"
+            # 停机等场景的取消：若不是用户已写的 cancelled 墓碑，落一个终态，避免 Redis 记录永远停在 running
+            try:
+                current_run = await get_workflow_run(thread_id)
+                if current_run and current_run.get("status") == "running":
+                    await save_workflow_run(
+                        thread_id,
+                        {**current_run, "status": "failed", "error": "服务重启导致任务中断，请重试"},
+                    )
+            except Exception as persist_err:
+                logger.error(
+                    "workflow: cancel terminal persistence failed",
+                    {"threadId": thread_id, "error": str(persist_err)},
+                )
             raise
         except Exception as err:
             terminal["status"] = "failed"
@@ -404,6 +423,16 @@ async def resume_workflow_stream(
     if not lock_token:
         return JSONResponse(status_code=409, content={"error": {"message": "工作流正在恢复，请勿重复提交"}})
 
+    # TOCTOU：加锁前的 paused 快照可能已被并发 cancel/resume 改写。取锁后必须复读，
+    # 状态不再是 paused（或归属变化）则释放锁并拒绝，避免用陈旧快照重复执行/复活已取消任务。
+    snapshot = await get_workflow_run(thread_id)
+    if not snapshot or snapshot.get("userId") != user.user_id:
+        await release_workflow_lock(thread_id, lock_token)
+        return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期，请重新启动"}})
+    if snapshot.get("status") != "paused":
+        await release_workflow_lock(thread_id, lock_token)
+        return JSONResponse(status_code=409, content={"error": {"message": "工作流当前不处于待审核状态"}})
+
     meta = WORKFLOW_META[workflow_id]
     graph_config = {"configurable": {"thread_id": thread_id}}
     queue: asyncio.Queue = asyncio.Queue()
@@ -447,6 +476,12 @@ async def resume_workflow_stream(
                     if node_meta:
                         await emit(sse_event("node_done", {"nodeId": name}))
 
+            # 写终态前复读：若期间被取消（如锁 TTL 过期后 cancel 写入墓碑），不覆盖取消状态。
+            current_run = await get_workflow_run(thread_id)
+            if not current_run or current_run.get("status") == "cancelled":
+                terminal["status"] = "cancelled"
+                return
+
             final_state = graph.get_state(graph_config)
             if final_state.next:
                 # 当前内置流程只有一个人工节点；仍保留通用的再次暂停语义。
@@ -488,7 +523,8 @@ async def resume_workflow_stream(
                     {
                         **snapshot,
                         "status": "failed",
-                        "error": str(err),
+                        # 与 start 路径一致：只存通用文案，原始错误细节仅进日志，避免外泄。
+                        "error": "工作流执行失败，请重试",
                     },
                 )
             except Exception as persist_err:

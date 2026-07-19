@@ -29,6 +29,7 @@ class PGVectorRetriever(BaseRetriever):
 
     k: int = Field(default=20, description="返回文档数量")
     category: Optional[str] = Field(default=None, description="按分类过滤")
+    owner_user_id: Optional[str] = Field(default=None, description="按上传者隔离（None 表示不限制/管理员）")
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> List[Document]:
         """同步检索（通过 asyncio.run 包装）"""
@@ -64,6 +65,7 @@ class PGVectorRetriever(BaseRetriever):
             query_vector=query_vec,
             k=self.k,
             category=self.category,
+            owner_user_id=self.owner_user_id,
         )
 
         documents: list[Document] = []

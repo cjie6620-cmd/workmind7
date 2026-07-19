@@ -28,6 +28,12 @@ ENV HF_HOME=/data/huggingface_cache
 ENV EMBEDDING_DEVICE=cpu
 ENV PORT=3001
 
+# 非 root 运行：降低容器逃逸影响；确保挂载卷（uploads、HF 缓存）可写
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/uploads /data/huggingface_cache \
+    && chown -R appuser:appuser /app /data
+USER appuser
+
 EXPOSE 3001
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

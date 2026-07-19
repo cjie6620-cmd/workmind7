@@ -19,10 +19,21 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   redis:
     image: redis:7-alpine
-    command: redis-server --requirepass ${WM_REDIS_PASSWORD:-workmind_dev}
+    # maxmemory + volatile-lru：只淘汰带 TTL 的键，且优先挑最久未访问的——通常是 cache:v2:* 缓存。
+    # 注意：预算账本/工作流快照/报告同样带 TTL，极端内存压力下也可能被淘汰（尽力而为，非硬保障），
+    # 因此 WM_REDIS_MAXMEMORY 必须按实际水位留足余量。禁止 allkeys-lru（连无 TTL 的键也会淘汰）。
+    command: >-
+      redis-server --requirepass ${WM_REDIS_PASSWORD:-workmind_dev}
+      --maxmemory ${WM_REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy volatile-lru
     volumes:
       - wm_redis_data:/data
     healthcheck:
@@ -31,6 +42,11 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   app:
     build:
@@ -80,6 +96,15 @@ services:
       retries: 10
       start_period: 180s
     restart: unless-stopped
+    # 优雅停机窗口需覆盖 workflow/erp/agent 的 20s 等待 + uvicorn graceful，避免发布强杀在途任务
+    stop_grace_period: 60s
+    # torch CPU 推理内存峰值需封顶，避免 OOM 拖垮宿主与 postgres（按实测调整）
+    mem_limit: ${WM_APP_MEM_LIMIT:-4g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   frontend:
     build:
@@ -97,6 +122,11 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   wm_pg_data:

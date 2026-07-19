@@ -35,6 +35,11 @@ os.environ.setdefault(
 os.environ.setdefault("AUTH_ENABLED", "false")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-must-be-at-least-32-chars")
 os.environ.setdefault("TESTING", "1")
+# Redis：登录/刷新签发 refresh token 需登记 jti（app.auth.token_store），集成测试必须能连 Redis。
+# 默认与本地测试容器 workmind7-redis（127.0.0.1:6381，密码 workmind_dev）对齐，可用 TEST_REDIS_* 覆盖。
+os.environ.setdefault("REDIS_HOST", os.environ.get("TEST_REDIS_HOST", "127.0.0.1"))
+os.environ.setdefault("REDIS_PORT", os.environ.get("TEST_REDIS_PORT", "6381"))
+os.environ.setdefault("REDIS_PASSWORD", os.environ.get("TEST_REDIS_PASSWORD", "workmind_dev"))
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 EMBEDDING_DIM = 1024

@@ -50,6 +50,9 @@ _pending: list[dict] = []
 _flush_lock = asyncio.Lock()
 _pending_lock = threading.Lock()
 _flush_task: asyncio.Task | None = None
+# DB 长时间不可用时限制待写队列上限，避免内存无界增长 OOM；超限丢弃最旧记录。
+_MAX_PENDING = 10_000
+_pending_dropped = 0
 
 
 # ── 日预算（持久化到 system_settings）──────────────────────────
@@ -101,12 +104,18 @@ def record_api_call(
         "fromCache": from_cache,
         "error": error,
     }
+    global _pending_dropped
     with _pending_lock:
         _calls.append(record)
         _pending.append(record)
         # 内存只保留最近 500 条
         if len(_calls) > 500:
             _calls.pop(0)
+        # 待写队列封顶：DB 长时间故障时丢弃最旧记录并计数，防止 OOM
+        if len(_pending) > _MAX_PENDING:
+            overflow = len(_pending) - _MAX_PENDING
+            del _pending[:overflow]
+            _pending_dropped += overflow
 
 
 # ── DB 持久化逻辑 ─────────────────────────────────────────────
@@ -172,10 +181,16 @@ async def _flush_to_db():
         logger.info(f"[monitor] 持久化了 {len(to_insert)} 条记录到 DB")
     except Exception as e:
         logger.warn(f"[monitor] 持久化失败，记录放回队列: {e}")
-        # 失败时放回队列，下次重试
+        # 失败时放回队列，下次重试；仍受 _MAX_PENDING 封顶，避免无界增长
+        global _pending_dropped
         async with _flush_lock:
             with _pending_lock:
-                _pending.extend(to_insert)
+                combined = to_insert + _pending
+                if len(combined) > _MAX_PENDING:
+                    overflow = len(combined) - _MAX_PENDING
+                    combined = combined[overflow:]
+                    _pending_dropped += overflow
+                _pending[:] = combined
 
 
 async def _flush_loop():
@@ -580,7 +595,7 @@ async def get_stats():
         "byFeature": by_feature,
         "last7Days": last7_days,
         "recentCalls": recent_calls,
-        "cacheStats": cache.get_stats(),
+        "cacheStats": await asyncio.to_thread(cache.get_stats),
     }
 
 

@@ -100,6 +100,7 @@ class PGVectorStore:
         k: int = 4,
         doc_id: Optional[str] = None,
         category: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
     ) -> List[Tuple[dict, float]]:
         """
         向量相似度搜索
@@ -109,6 +110,8 @@ class PGVectorStore:
             k: 返回前 k 个结果
             doc_id: 可选，限定文档ID
             category: 可选，限定分类
+            owner_user_id: 可选，按上传者隔离（NULL owner 为共享文档，对所有人可见）；
+                传入后过滤下推到 SQL，避免召回被其他租户文档挤占（recall starvation）。
 
         Returns:
             List[(文档, 相似度分数)]，按相似度降序排列
@@ -138,6 +141,10 @@ class PGVectorStore:
         if category:
             query_str += " AND metadata->>'category' = :category"
             params["category"] = category
+
+        if owner_user_id is not None:
+            query_str += " AND (metadata->>'ownerUserId' IS NULL OR metadata->>'ownerUserId' = :owner_user_id)"
+            params["owner_user_id"] = str(owner_user_id)
 
         query_str += """
             ORDER BY embedding <=> :query_vector
@@ -186,13 +193,15 @@ class PGVectorStore:
         logger.info("pgvector: deleted doc", {"doc_id": doc_id})
 
     async def count(self, doc_id: Optional[str] = None) -> int:
-        """统计切片数量"""
+        """统计切片数量（用 COUNT 聚合，避免把整表行与向量拉进内存）"""
+        from sqlalchemy import func
+
+        stmt = select(func.count()).select_from(RagChunk)
+        if doc_id:
+            stmt = stmt.where(RagChunk.doc_id == uuid.UUID(doc_id))
         async with async_session_factory() as session:
-            if doc_id:
-                result = await session.execute(select(RagChunk).where(RagChunk.doc_id == uuid.UUID(doc_id)))
-            else:
-                result = await session.execute(select(RagChunk))
-            return len(result.scalars().all())
+            result = await session.execute(stmt)
+            return int(result.scalar_one())
 
     async def get_doc_ids(self) -> List[str]:
         """获取所有文档ID列表"""

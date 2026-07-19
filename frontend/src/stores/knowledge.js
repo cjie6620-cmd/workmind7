@@ -19,8 +19,8 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   async function loadDocuments(category = '') {
     const version = stateVersion
     try {
-      const params = category ? `?category=${category}` : ''
-      const data = await http.get(`/knowledge/documents${params}`)
+      const params = category ? `?category=${encodeURIComponent(category)}` : ''
+      const data = await http.get(`/knowledge/documents${params}`, { silent: true })
       if (version !== stateVersion) return
       documents.value = data.documents
     } catch (err) {
@@ -32,7 +32,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   async function loadCategories() {
     const version = stateVersion
     try {
-      const data = await http.get('/knowledge/categories')
+      const data = await http.get('/knowledge/categories', { silent: true })
       if (version !== stateVersion) return
       categories.value = data.categories
     } catch (err) {
@@ -59,6 +59,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       const result = await http.post('/knowledge/documents', formData, {
         signal: controller.signal,
         timeout: 120000,
+        silent: true,
         onUploadProgress: (event) => {
           if (event.total) {
             uploadProgress.value = Math.round((event.loaded / event.total) * 80)
@@ -74,7 +75,8 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       return result.document
     } catch (err) {
       if (err.code === 'ERR_CANCELED') return null
-      appStore.toast.error(err.message || '上传失败')
+      // silent 请求拦截器不再弹错，这里优先展示服务端原因（体积超限/类型不支持等）
+      appStore.toast.error(err.response?.data?.error?.message || err.message || '上传失败')
       throw err
     } finally {
       if (uploadController === controller) {
@@ -95,7 +97,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       const data = await http.post(
         '/knowledge/documents',
         { title, category, content },
-        { signal: controller.signal, timeout: 120000 },
+        { signal: controller.signal, timeout: 120000, silent: true },
       )
       if (version !== stateVersion) return null
       await loadDocuments()
@@ -104,7 +106,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       return data.document
     } catch (err) {
       if (err.code === 'ERR_CANCELED') return null
-      appStore.toast.error('入库失败：' + (err.message || '未知错误'))
+      appStore.toast.error('入库失败：' + (err.response?.data?.error?.message || err.message || '未知错误'))
       throw err
     } finally {
       if (uploadController === controller) {
@@ -118,14 +120,14 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     const version = stateVersion
     const doc = documents.value.find(d => d.id === docId)
     try {
-      await http.delete(`/knowledge/documents/${docId}`)
+      await http.delete(`/knowledge/documents/${docId}`, { silent: true })
       if (version !== stateVersion) return false
       documents.value = documents.value.filter(d => d.id !== docId)
       appStore.toast.success(`「${doc?.title}」已删除`)
       return true
     } catch (err) {
       if (version !== stateVersion || err.code === 'ERR_CANCELED') return false
-      appStore.toast.error(err.message || '删除文档失败')
+      appStore.toast.error(err.response?.data?.error?.message || err.message || '删除文档失败')
       return false
     }
   }
@@ -187,15 +189,16 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
       time: new Date().toISOString(),
     })
 
-    const aiMsg = {
+    messages.value.push({
       id:       ++msgId,
       role:     'assistant',
       content:  '',
       sources:  [],
       status:   '正在检索相关文档...',
       streaming: true,
-    }
-    messages.value.push(aiMsg)
+    })
+    // 取数组内的响应式代理引用；直接改裸对象不会触发视图更新（流式会卡死）。
+    const aiMsg = messages.value[messages.value.length - 1]
 
     const controller = new AbortController()
     const version = stateVersion

@@ -170,7 +170,8 @@ onMounted(async () => {
   await wfStore.restorePendingRun()
 })
 
-onUnmounted(() => wfStore.stopStream())
+// 离开页面只断开推送、保留待恢复凭据；刷新/返回后可恢复暂停中的工作流。
+onUnmounted(() => wfStore.detach())
 </script>
 
 <style scoped>

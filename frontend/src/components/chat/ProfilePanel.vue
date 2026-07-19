@@ -74,17 +74,21 @@ async function clearProfile() {
 
 <!-- ProfileItem 内联子组件 -->
 <script>
+import { h, resolveComponent } from 'vue'
+
+// 用渲染函数而非 template 字符串：生产 runtime-only 构建不含模板编译器。
 const ProfileItem = {
   props: ['label', 'value', 'icon'],
-  template: `
-    <div class="profile-row">
-      <el-icon class="row-icon"><component :is="icon" /></el-icon>
-      <div>
-        <div class="row-label">{{ label }}</div>
-        <div class="row-value">{{ value }}</div>
-      </div>
-    </div>
-  `,
+  render() {
+    const iconComp = this.icon ? resolveComponent(this.icon) : null
+    return h('div', { class: 'profile-row' }, [
+      h(resolveComponent('el-icon'), { class: 'row-icon' }, () => (iconComp ? [h(iconComp)] : [])),
+      h('div', null, [
+        h('div', { class: 'row-label' }, this.label),
+        h('div', { class: 'row-value' }, this.value),
+      ]),
+    ])
+  },
 }
 export default { components: { ProfileItem } }
 </script>

@@ -141,13 +141,16 @@ async def _extract_pdf_by_mineru(file_path):
 
     if not api_key:
         logger.warn("mineru: api_key 未配置，fallback 到 pypdf")
-        return _extract_pdf_by_pypdf(file_path)
+        # pypdf 解析是 CPU 密集同步操作，放线程池避免阻塞事件循环
+        return await asyncio.to_thread(_extract_pdf_by_pypdf, file_path)
 
     base_url = "https://mineru.net"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
+    # 每个 HTTP 调用的（连接, 读取）超时，避免单次请求挂起导致线程永不返回
+    http_timeout = (10, 60)
 
     def _sync():
         file_name = os.path.basename(file_path)
@@ -160,6 +163,7 @@ async def _extract_pdf_by_mineru(file_path):
                 "files": [{"name": file_name}],
                 "model_version": model_version,
             },
+            timeout=http_timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -171,7 +175,7 @@ async def _extract_pdf_by_mineru(file_path):
 
         # Step 2: PUT 上传文件到签名 URL
         with open(file_path, "rb") as f:
-            upload_resp = requests.put(file_urls[0], data=f)
+            upload_resp = requests.put(file_urls[0], data=f, timeout=(10, 120))
             upload_resp.raise_for_status()
 
         # Step 3: 轮询解析结果
@@ -181,6 +185,7 @@ async def _extract_pdf_by_mineru(file_path):
             poll_resp = requests.get(
                 f"{base_url}/api/v4/extract-results/batch/{batch_id}",
                 headers=headers,
+                timeout=http_timeout,
             )
             poll_resp.raise_for_status()
             poll_data = poll_resp.json()
@@ -195,7 +200,7 @@ async def _extract_pdf_by_mineru(file_path):
             if state == "done":
                 # Step 4: 下载 zip，提取 full.md
                 zip_url = item["full_zip_url"]
-                zip_resp = requests.get(zip_url)
+                zip_resp = requests.get(zip_url, timeout=(10, 120))
                 zip_resp.raise_for_status()
                 with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
                     for name in zf.namelist():
@@ -214,7 +219,7 @@ async def _extract_pdf_by_mineru(file_path):
         return await asyncio.to_thread(_sync)
     except Exception as e:
         logger.warn("mineru: 调用失败，fallback 到 pypdf", {"error": str(e)})
-        return _extract_pdf_by_pypdf(file_path)
+        return await asyncio.to_thread(_extract_pdf_by_pypdf, file_path)
 
 
 async def extract_text(file_path):

@@ -1,0 +1,25 @@
+# 禁止把密钥与无关文件打进镜像层（COPY . . 会包含构建上下文全部内容）
+.env
+.env.*
+!.env.example
+*.env
+
+# 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 版本控制与本地数据
+.git/
+.gitignore
+uploads/
+*.log
+
+# 测试与开发文件（运行时不需要）
+tests/
+htmlcov/
+.coverage

@@ -48,10 +48,12 @@ async def retrieve_docs(question, category=None, k=None, *, owner_user_id=None, 
         k = rag_config["final_k"]
 
     # ① 混合检索（BM25 + 向量 + RRF 融合）
-    retriever = await get_hybrid_retriever(category)
+    # 非 admin 时把 owner 过滤下推到检索层，避免召回被其他租户文档挤占。
+    effective_owner = None if is_admin else owner_user_id
+    retriever = await get_hybrid_retriever(category, owner_user_id=effective_owner)
     candidates = await retriever.ainvoke(question)
 
-    # 第二步：在精排前按文档所有者过滤，避免跨用户内容进入上下文
+    # 第二步：精排前再按所有者过滤一次作为纵深防御（即便检索层未过滤也不泄漏）
     if not is_admin and owner_user_id is not None:
         candidates = [
             doc
@@ -76,10 +78,10 @@ async def retrieve_docs(question, category=None, k=None, *, owner_user_id=None, 
         },
     )
 
-    # ② CrossEncoder 精排（线程池执行，避免阻塞事件循环）
+    # ② CrossEncoder 精排（模型加载与打分都放线程池，避免首个请求卡住事件循环）
     import asyncio
 
-    reranker = get_reranker()
+    reranker = await asyncio.to_thread(get_reranker)
     ranked = await asyncio.to_thread(reranker.rerank, question, candidates, top_n=k)
 
     logger.info(
