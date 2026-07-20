@@ -9,7 +9,6 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +30,7 @@ from ..utils.background_tasks import wait_or_cancel_tasks
 from ..utils.logger import logger
 from ..utils.sse import sse_error, sse_event
 from ..utils.sse_disconnect import pump_queue_events
+from ..utils.responses import error_response
 
 erp_router = APIRouter()
 
@@ -123,7 +123,7 @@ async def erp_parse(req: ErpParseRequest):
     form_type = req.formType
 
     if form_type not in ("expense", "leave"):
-        return JSONResponse(status_code=400, content={"error": {"message": "formType 必须是 expense 或 leave"}})
+        return error_response(400, "formType 必须是 expense 或 leave")
 
     try:
         form = await (parse_expense_form(text) if form_type == "expense" else parse_leave_form(text))
@@ -131,13 +131,10 @@ async def erp_parse(req: ErpParseRequest):
         return {"success": True, "form": form_dict, "formType": form_type}
     except (ValueError, ValidationError) as err:
         logger.warning("erp: form parse validation failed", {"error": str(err), "formType": form_type})
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"message": "无法识别为有效表单，请检查金额、日期和必填项"}},
-        )
+        return error_response(422, "无法识别为有效表单，请检查金额、日期和必填项")
     except Exception as err:
         logger.error("erp: parse error", {"error": str(err), "formType": form_type})
-        return JSONResponse(status_code=500, content={"error": {"message": "解析失败，请稍后重试"}})
+        return error_response(500, "解析失败，请稍后重试")
 
 
 @erp_router.post("/submit/stream")
@@ -150,13 +147,10 @@ async def erp_submit_stream(
     try:
         form_data = _validated_form(req.formType, req.formData)
     except ValueError as err:
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))
     except ValidationError as err:
         logger.info("erp: submit validation failed", {"userId": user.user_id, "errors": err.errors()})
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"message": "表单校验失败，请检查金额、日期范围和必填项"}},
-        )
+        return error_response(422, "表单校验失败，请检查金额、日期范围和必填项")
 
     # 申请人身份完全由认证上下文派生，忽略客户端 applicantName。
     form_data["applicantName"] = user.username
@@ -301,7 +295,7 @@ async def list_applications(
     """普通用户只看自己的记录；管理员可查看全部预审记录。"""
     allowed_statuses = {"pending", "approved", "rejected", "needs_info", "failed"}
     if status and status not in allowed_statuses:
-        return JSONResponse(status_code=400, content={"error": {"message": "无效的申请状态"}})
+        return error_response(400, "无效的申请状态")
 
     stmt = select(ApprovalRecord).order_by(desc(ApprovalRecord.created_at)).limit(limit)
     if user.role != "admin":
@@ -343,7 +337,7 @@ async def get_application(
 
     # 对非所有者统一返回 404，避免枚举其他用户申请 ID。
     if not record or (user.role != "admin" and record.user_id != user.user_id):
-        return JSONResponse(status_code=404, content={"error": {"message": "申请不存在"}})
+        return error_response(404, "申请不存在")
     return _detail(record)
 
 

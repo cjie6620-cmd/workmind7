@@ -2,8 +2,8 @@
 #    uv pip compile requirements.txt -o requirements.linux-cpu.lock.txt --python-platform x86_64-manylinux_2_28 --python-version 3.12 --index-strategy unsafe-best-match
 # 安全更新（2026-07-20）：torch 2.5.1+cpu → 2.6.0+cpu 修复 torch.load RCE（CVE-2025-32434）。
 # 注意：torch 2.6.0 精确固定 sympy==1.13.1（与 2.5.1 相同），禁止顺手升级 sympy（1.13.3 会使解析失败）。
-# 本次为手动最小更新，已在 Linux 容器完成全量安装 + uv pip check + 最小重解析零漂移验证；
-# CI 门禁：backend job 每次跑 uv pip check，lock-verify job 跑 scripts/regenerate_linux_cpu_lock.sh 观测漂移。
+# 本次为手动最小更新，已在 Linux 容器完成全量安装 + uv pip check + 原地重解析零漂移验证；
+# CI 门禁：backend job 冻结安装后跑 uv pip check，lock-verify job 跑 scripts/regenerate_linux_cpu_lock.sh 断言零漂移。
 aiofiles==25.1.0
     # via -r requirements.txt
 aiohappyeyeballs==2.7.1

@@ -245,14 +245,10 @@ async def get_today_cost_cny(target_day: date | None = None) -> float:
             raise _guard_unavailable("预算用量暂时不可用，请稍后重试") from exc
 
         # 非强制模式明确降级，仅统计本 worker 尚可见的内存记录。
-        from ..routes.monitor import _calls
+        from .usage_monitor import memory_day_cost
 
         logger.warn(f"[budget] 当日费用聚合失败，降级使用本进程监控记录: {exc}")
-        return sum(
-            float(call["costCNY"])
-            for call in _calls
-            if business_date(call["time"]) == selected_day and not call["fromCache"]
-        )
+        return memory_day_cost(selected_day)
 
 
 async def _reserve_amount(

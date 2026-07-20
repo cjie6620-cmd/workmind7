@@ -20,9 +20,9 @@ from ..utils.business_time import business_date, utc_now_naive
 
 
 def _record_api_call(**kwargs):
-    """延迟导入监控写入函数，避免 model -> interceptor -> routes 的循环依赖。"""
+    """延迟导入监控写入函数，避免 model ↔ usage_monitor 的启动期导入顺序问题。"""
     try:
-        from ..routes.monitor import record_api_call
+        from .usage_monitor import record_api_call
 
         record_api_call(**kwargs)
     except Exception as exc:

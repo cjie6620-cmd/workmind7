@@ -16,12 +16,12 @@ import uuid
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import config
 from .auth.middleware_utils import is_auth_enabled, is_public_api_path, resolve_auth_user
 from .utils.logger import logger
+from .utils.responses import error_response
 
 INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions?", re.I),
@@ -166,10 +166,7 @@ class StreamingSafeMiddleware:
         if path.startswith("/api/") and not is_public_api_path(path, method):
             auth_user = resolve_auth_user(scope)
             if auth_user is None:
-                resp = JSONResponse(
-                    status_code=401,
-                    content={"error": {"code": "UNAUTHORIZED", "message": "未认证，请先登录"}},
-                )
+                resp = error_response(401, "未认证，请先登录", code="UNAUTHORIZED")
                 await resp(scope, receive, send)
                 return
             state = scope.setdefault("state", {})
@@ -182,10 +179,7 @@ class StreamingSafeMiddleware:
 
         # 健康探针必须豁免限流：Docker/K8s 高频探活，否则会把容器打成 unhealthy（T2）
         if not path.startswith("/health") and not await _check_rate_limit(scope, path):
-            resp = JSONResponse(
-                status_code=429,
-                content={"error": {"code": "RATE_LIMIT", "message": "请求太频繁，请稍后重试"}},
-            )
+            resp = error_response(429, "请求太频繁，请稍后重试", code="RATE_LIMIT")
             await resp(scope, receive, send)
             return
 

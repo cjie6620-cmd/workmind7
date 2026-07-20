@@ -2,8 +2,8 @@
 // 对话模块全局状态：会话列表、当前会话消息、角色、用户画像
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 import { useMonitorStore } from './monitor.js'
 
@@ -231,13 +231,10 @@ export const useChatStore = defineStore('chat', () => {
 
   // ── 发送消息（核心）──────────────────────────────────────────
   const loading = ref(false)
-  let abortController = null
+  const sendTask = useSseTask(() => stateVersion)
 
   function stopGenerate() {
-    if (abortController) {
-      abortController.abort()
-      abortController = null
-    }
+    sendTask.abort()
     loading.value = false
     const msgs = currentSession.value?.messages || []
     const lastAi = [...msgs].reverse().find((m) => m.role === 'assistant')
@@ -281,11 +278,7 @@ export const useChatStore = defineStore('chat', () => {
     // 获取数组中实际的消息对象引用（确保响应式）
     const aiMsgRef = session.messages[session.messages.length - 1]
 
-    const controller = new AbortController()
-    abortController = controller
-    const version = stateVersion
-
-    await fetchStream(
+    await sendTask.run(
       '/api/chat/stream',
       {
         message:   text,
@@ -293,18 +286,14 @@ export const useChatStore = defineStore('chat', () => {
         role:      selectedRole.value,
       },
       {
-        signal: controller.signal,
         onToken: (token) => {
-          if (version !== stateVersion) return
           aiMsgRef.content += token
         },
         onEvent: (event) => {
-          if (version !== stateVersion) return
           if (event === 'cache_hit') aiMsgRef.fromCache = true
           if (event === 'start')     aiMsgRef.streaming = true
         },
         onDone: (data) => {
-          if (version !== stateVersion) return
           aiMsgRef.streaming = false
           if (data.assistantMessageId) {
             aiMsgRef.id = data.assistantMessageId
@@ -316,18 +305,15 @@ export const useChatStore = defineStore('chat', () => {
           loadProfile()
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           aiMsgRef.streaming = false
           aiMsgRef.content   = aiMsgRef.content || '抱歉，出现了一些问题，请重试。'
           appStore.toast.error(err.message || '发送失败')
         },
+        onSettled: () => {
+          loading.value = false
+        },
       }
     )
-
-    if (abortController === controller) {
-      loading.value = false
-      abortController = null
-    }
   }
 
   // 复制消息内容

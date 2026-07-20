@@ -21,7 +21,6 @@ import asyncio
 import time as _time
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.event import JSONServerSentEvent
 from sse_starlette.sse import EventSourceResponse
@@ -43,6 +42,7 @@ from ..schemas.requests import (
 from ..utils.sse import sse_event, sse_error
 from ..utils.sse_disconnect import pump_queue_events, client_still_connected
 from ..utils.logger import logger
+from ..utils.responses import error_response
 
 prompt_router = APIRouter()
 
@@ -66,7 +66,7 @@ async def prompt_test_stream(req: PromptTestRequest, request: Request):
     max_tokens = req.maxTokens
 
     if not user_message:
-        return JSONResponse(status_code=400, content={"error": {"message": "测试消息不能为空"}})
+        return error_response(400, "测试消息不能为空")
 
     async def event_generator():
         try:
@@ -144,7 +144,7 @@ async def prompt_ab_test_stream(req: PromptAbTestRequest, request: Request):
     max_tokens = req.maxTokens
 
     if not question:
-        return JSONResponse(status_code=400, content={"error": {"message": "测试问题不能为空"}})
+        return error_response(400, "测试问题不能为空")
 
     # 构建消息
     msgs_a = ([SystemMessage(system_prompt_a)] if system_prompt_a else []) + [HumanMessage(question)]
@@ -236,7 +236,7 @@ async def get_prompt_template(template_id: str):
     """获取指定模板详情"""
     t = await get_template(template_id)
     if not t:
-        return JSONResponse(status_code=404, content={"error": {"message": "模板不存在"}})
+        return error_response(404, "模板不存在")
     return t
 
 
@@ -250,12 +250,12 @@ async def create_prompt_template(req: PromptTemplateRequest):
     name = req.name.strip()
     system_prompt = req.systemPrompt.strip()
     if not name or not system_prompt:
-        return JSONResponse(status_code=400, content={"error": {"message": "模板名称和内容不能为空"}})
+        return error_response(400, "模板名称和内容不能为空")
     try:
         template = await save_template(name, system_prompt, req.description, req.tags)
         return {"success": True, "template": template}
     except ValueError as err:
-        return JSONResponse(status_code=409, content={"error": {"message": str(err)}})
+        return error_response(409, str(err))
 
 
 @prompt_router.put("/templates/{template_id}")
@@ -272,7 +272,7 @@ async def update_prompt_template(template_id: str, req: PromptTemplateRequest):
         return {"success": True, "template": template}
     except ValueError as err:
         status_code = 404 if "不存在" in str(err) else 409
-        return JSONResponse(status_code=status_code, content={"error": {"message": str(err)}})
+        return error_response(status_code, str(err))
 
 
 @prompt_router.delete("/templates/{template_id}")
@@ -282,4 +282,4 @@ async def remove_prompt_template(template_id: str):
         await delete_template(template_id)
         return {"success": True}
     except ValueError as err:
-        return JSONResponse(status_code=404, content={"error": {"message": str(err)}})
+        return error_response(404, str(err))

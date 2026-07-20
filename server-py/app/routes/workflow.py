@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..auth.dependencies import get_current_user
@@ -30,6 +29,7 @@ from ..utils.background_tasks import wait_or_cancel_tasks
 from ..utils.logger import logger
 from ..utils.sse import sse_error, sse_event
 from ..utils.sse_disconnect import pump_queue_events
+from ..utils.responses import error_response
 
 workflow_router = APIRouter()
 _workflow_tasks: dict[str, asyncio.Task] = {}
@@ -186,7 +186,7 @@ async def get_run(
     """查询运行快照（断线重连/刷新后恢复用）；非本人一律 404 防枚举。"""
     run = await get_workflow_run(thread_id)
     if not run or run.get("userId") != user.user_id:
-        return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
+        return error_response(404, "工作流不存在或已过期")
     return {"run": _public_run(run)}
 
 
@@ -198,15 +198,15 @@ async def cancel_run(
     """显式取消工作流：取分布式锁 → 复读快照 → 写取消墓碑 → 取消本地任务。"""
     run = await get_workflow_run(thread_id)
     if not run or run.get("userId") != user.user_id:
-        return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
+        return error_response(404, "工作流不存在或已过期")
     lock_token = await acquire_workflow_lock(thread_id)
     if not lock_token:
-        return JSONResponse(status_code=409, content={"error": {"message": "工作流正在恢复，暂时无法取消"}})
+        return error_response(409, "工作流正在恢复，暂时无法取消")
     try:
         # 取锁后复读，用最新快照写墓碑；对已终态运行幂等返回，避免把 completed 改写成 cancelled。
         run = await get_workflow_run(thread_id)
         if not run or run.get("userId") != user.user_id:
-            return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
+            return error_response(404, "工作流不存在或已过期")
         if run.get("status") in {"completed", "failed", "cancelled"}:
             return {"success": True, "status": run.get("status")}
         # 保留取消墓碑到 TTL，防止另一个 worker 的迟到结果重新写回可见状态。
@@ -242,13 +242,13 @@ async def start_workflow_stream(
     """
     workflow_id = req.workflowId
     if workflow_id not in WORKFLOW_BUILDERS:
-        return JSONResponse(status_code=400, content={"error": {"message": f"未知工作流：{workflow_id}"}})
+        return error_response(400, f"未知工作流：{workflow_id}")
     if not await _workflow_is_active(workflow_id):
-        return JSONResponse(status_code=409, content={"error": {"message": "该工作流已停用"}})
+        return error_response(409, "该工作流已停用")
     try:
         input_data = _normalize_input(workflow_id, req.input)
     except ValueError as err:
-        return JSONResponse(status_code=422, content={"error": {"message": str(err)}})
+        return error_response(422, str(err))
 
     thread_id = f"wf_{user.user_id}_{uuid.uuid4().hex}"
     graph_config = {"configurable": {"thread_id": thread_id}}
@@ -274,10 +274,7 @@ async def start_workflow_stream(
                 "error": str(err),
             },
         )
-        return JSONResponse(
-            status_code=503,
-            content={"error": {"message": "工作流状态存储暂不可用，请稍后重试"}},
-        )
+        return error_response(503, "工作流状态存储暂不可用，请稍后重试")
 
     async def emit(item) -> None:
         if transport["connected"]:
@@ -427,28 +424,28 @@ async def resume_workflow_stream(
     thread_id = req.threadId
     snapshot = await get_workflow_run(thread_id)
     if not snapshot or snapshot.get("userId") != user.user_id:
-        return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期，请重新启动"}})
+        return error_response(404, "工作流不存在或已过期，请重新启动")
 
     if snapshot.get("status") != "paused":
-        return JSONResponse(status_code=409, content={"error": {"message": "工作流当前不处于待审核状态"}})
+        return error_response(409, "工作流当前不处于待审核状态")
 
     workflow_id = snapshot.get("workflowId")
     if workflow_id not in WORKFLOW_BUILDERS or workflow_id not in PAUSE_PREDECESSOR:
-        return JSONResponse(status_code=409, content={"error": {"message": "工作流版本已失效，请重新启动"}})
+        return error_response(409, "工作流版本已失效，请重新启动")
 
     lock_token = await acquire_workflow_lock(thread_id)
     if not lock_token:
-        return JSONResponse(status_code=409, content={"error": {"message": "工作流正在恢复，请勿重复提交"}})
+        return error_response(409, "工作流正在恢复，请勿重复提交")
 
     # TOCTOU：加锁前的 paused 快照可能已被并发 cancel/resume 改写。取锁后必须复读，
     # 状态不再是 paused（或归属变化）则释放锁并拒绝，避免用陈旧快照重复执行/复活已取消任务。
     snapshot = await get_workflow_run(thread_id)
     if not snapshot or snapshot.get("userId") != user.user_id:
         await release_workflow_lock(thread_id, lock_token)
-        return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期，请重新启动"}})
+        return error_response(404, "工作流不存在或已过期，请重新启动")
     if snapshot.get("status") != "paused":
         await release_workflow_lock(thread_id, lock_token)
-        return JSONResponse(status_code=409, content={"error": {"message": "工作流当前不处于待审核状态"}})
+        return error_response(409, "工作流当前不处于待审核状态")
 
     meta = WORKFLOW_META[workflow_id]
     graph_config = {"configurable": {"thread_id": thread_id}}

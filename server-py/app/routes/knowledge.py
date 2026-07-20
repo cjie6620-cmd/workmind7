@@ -20,7 +20,6 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..auth.dependencies import get_current_user
@@ -39,6 +38,7 @@ from ..utils.sse import sse_event, sse_error
 from ..utils.file_validate import validate_file, validate_ext, MAX_FILE_SIZE
 from ..utils.logger import logger
 from ..utils.session_guard import assert_session_owner
+from ..utils.responses import error_response
 
 # 上传标题/分类的最大长度，与 documents 表列宽对齐，避免超长触发 DB 500
 MAX_TITLE_LEN = 200
@@ -201,29 +201,23 @@ async def upload_document(
             try:
                 fields, file_data = await _read_multipart(request)
             except ValueError as err:
-                return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+                return error_response(400, str(err))
             title = (fields.get("title") or "未命名文档")[:MAX_TITLE_LEN]
             category = (fields.get("category") or "通用")[:MAX_CATEGORY_LEN]
 
             if not file_data:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": {"message": "请上传文件或提供文本内容"}},
-                )
+                return error_response(400, "请上传文件或提供文本内容")
 
             original_name = _safe_file_name(file_data["filename"])
             file_content = file_data["content"]
 
             if len(file_content) > MAX_FILE_SIZE:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": {"message": "文件不能超过 10MB"}},
-                )
+                return error_response(400, "文件不能超过 10MB")
 
             try:
                 validate_ext(original_name)
             except ValueError as err:
-                return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+                return error_response(400, str(err))
 
             safe_name = f"{uuid.uuid4().hex}_{original_name}"
             file_path = os.path.join(UPLOAD_DIR, safe_name)
@@ -234,7 +228,7 @@ async def upload_document(
                 validate_file(file_path, original_name)
             except ValueError as err:
                 _remove_file(file_path)
-                return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+                return error_response(400, str(err))
 
             doc_meta = await ingest_document(
                 file_path=file_path,
@@ -248,27 +242,21 @@ async def upload_document(
             try:
                 raw_body = await _read_body_bounded(request)
             except ValueError as err:
-                return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+                return error_response(400, str(err))
             try:
                 payload = json.loads(raw_body)
             except (json.JSONDecodeError, ValueError):
-                return JSONResponse(status_code=400, content={"error": {"message": "JSON 格式不正确"}})
+                return error_response(400, "JSON 格式不正确")
 
             title = str(payload.get("title", "未命名文档"))[:MAX_TITLE_LEN]
             category = str(payload.get("category", "通用"))[:MAX_CATEGORY_LEN]
             content = payload.get("content")
 
             if not content:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": {"message": "请上传文件或提供文本内容"}},
-                )
+                return error_response(400, "请上传文件或提供文本内容")
 
             if len(content.encode("utf-8")) > MAX_FILE_SIZE:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": {"message": "文本内容不能超过 10MB"}},
-                )
+                return error_response(400, "文本内容不能超过 10MB")
 
             file_path = os.path.join(UPLOAD_DIR, f"tmp_{uuid.uuid4().hex}.txt")
             with open(file_path, "w", encoding="utf-8") as f:
@@ -282,20 +270,17 @@ async def upload_document(
                 owner_user_id=user.user_id,
             )
         else:
-            return JSONResponse(
-                status_code=400,
-                content={"error": {"message": "不支持的 Content-Type"}},
-            )
+            return error_response(400, "不支持的 Content-Type")
 
         return {"success": True, "document": doc_meta}
     except ValueError as err:
         _remove_file(file_path)
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))
     except Exception as err:
         _remove_file(file_path)
         # 内部异常细节（SQL、驱动、路径）只记日志，对客户端返回通用文案。
         logger.error("knowledge: ingest error", {"error": str(err)})
-        return JSONResponse(status_code=500, content={"error": {"message": "文档处理失败"}})
+        return error_response(500, "文档处理失败")
 
 
 @knowledge_router.get("/documents")
@@ -328,12 +313,12 @@ async def remove_document(
         )
         return {"success": True}
     except PermissionError as err:
-        return JSONResponse(status_code=403, content={"error": {"message": str(err)}})
+        return error_response(403, str(err))
     except ValueError as err:
-        return JSONResponse(status_code=404, content={"error": {"message": str(err)}})
+        return error_response(404, str(err))
     except Exception as err:
         logger.error("knowledge: delete error", {"error": str(err), "docId": doc_id})
-        return JSONResponse(status_code=500, content={"error": {"message": "文档删除失败"}})
+        return error_response(500, "文档删除失败")
 
 
 @knowledge_router.post("/query/stream")
@@ -357,11 +342,11 @@ async def rag_stream(
     session_id = req.sessionId or f"knowledge_{user_id}_{uuid.uuid4().hex[:12]}"
 
     if not question:
-        return JSONResponse(status_code=400, content={"error": {"message": "问题不能为空"}})
+        return error_response(400, "问题不能为空")
 
     # 与 chat/agent 入口一致的注入检测；用户输入先过滤再进入检索与生成。
     if check_injection(question):
-        return JSONResponse(status_code=400, content={"error": {"message": "输入内容不符合使用规范"}})
+        return error_response(400, "输入内容不符合使用规范")
 
     await assert_session_owner(session_id, user_id)
 

@@ -17,6 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..config import config
 from ..services.cache import cache
+from ..utils.responses import error_response
 
 health_router = APIRouter()
 _start_time = time.monotonic()
@@ -90,7 +91,7 @@ async def health_ready():
 async def health_root():
     """详细健康检查（生产环境返回 404）"""
     if _is_production:
-        return JSONResponse(status_code=404, content={"error": {"message": "Not found"}})
+        return error_response(404, "Not found")
 
     from ..core.database import check_tables_status
 

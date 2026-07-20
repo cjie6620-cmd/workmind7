@@ -2,8 +2,8 @@
 // ERP 模块状态：表单解析、审批流、申请记录
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 
 export const useErpStore = defineStore('erp', () => {
@@ -29,9 +29,9 @@ export const useErpStore = defineStore('erp', () => {
   // 当前申请编号
   const currentAppId = ref('')
   const approvalRequestId = ref('')
-  let abortController = null
   // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
+  const approvalTask = useSseTask(() => stateVersion)
 
   // ── 申请列表 ──────────────────────────────────────────────
   const applications = ref([])
@@ -72,11 +72,8 @@ export const useErpStore = defineStore('erp', () => {
     // 幂等键：同一份表单重试（网络中断/重复点击）复用同一 requestId，
     // 服务端据此返回已有申请而不重复执行审批；解析新表单时才重新生成
     if (!approvalRequestId.value) approvalRequestId.value = createRequestId()
-    const controller = new AbortController()
-    const version = stateVersion
-    abortController = controller
 
-    await fetchStream(
+    await approvalTask.run(
       '/api/erp/submit/stream',
       {
         formData:      parsedForm.value,
@@ -85,9 +82,7 @@ export const useErpStore = defineStore('erp', () => {
         requestId:     approvalRequestId.value,
       },
       {
-        signal: controller.signal,
         onEvent: (event, data) => {
-          if (version !== stateVersion) return
           if (event === 'start') {
             currentAppId.value = data.appId
           }
@@ -135,21 +130,17 @@ export const useErpStore = defineStore('erp', () => {
 
         },
         onDone: () => {
-          if (version !== stateVersion) return
           approving.value = false
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           approving.value = false
           appStore.toast.error(err.message || '审批流程出错')
         },
+        onSettled: () => {
+          approving.value = false
+        },
       }
     )
-
-    if (abortController === controller) {
-      abortController = null
-      approving.value = false
-    }
   }
 
   // ── 申请记录 ──────────────────────────────────────────────
@@ -176,14 +167,13 @@ export const useErpStore = defineStore('erp', () => {
   }
 
   function detachApproval() {
-    // 离开页面时仅断开 UI 推送，不 abort 已受理的服务端预审任务
-    abortController = null
+    // 离开页面时只放弃控制权（不 abort）：预审已受理，让流自然跑完，回调受 version 守卫
+    approvalTask.detach()
     approving.value = false
   }
 
   function stopApproval() {
-    abortController?.abort()
-    abortController = null
+    approvalTask.abort()
     approving.value = false
   }
 

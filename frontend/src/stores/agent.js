@@ -2,8 +2,8 @@
 // Agent 模块状态：任务历史、工具调用步骤、执行状态
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 
 export const useAgentStore = defineStore('agent', () => {
@@ -75,7 +75,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   // 当前正在执行的任务状态（实时更新）
   const currentTask = ref(null)
-  let abortController = null
+  const runSseTask = useSseTask(() => stateVersion)
 
   let taskId = 0
 
@@ -154,11 +154,8 @@ export const useAgentStore = defineStore('agent', () => {
     tasks.value.unshift(task)
     const rt = tasks.value[0]
     currentTask.value = rt
-    const controller = new AbortController()
-    abortController = controller
-    const version = stateVersion
 
-    await fetchStream(
+    await runSseTask.run(
       '/api/agent/run',
       {
         task: taskText,
@@ -166,14 +163,11 @@ export const useAgentStore = defineStore('agent', () => {
         configId: selectedConfigId.value || undefined,
       },
       {
-        signal: controller.signal,
         onToken: (token) => {
-          if (version !== stateVersion) return
           rt.answer += token
         },
 
         onEvent: (event, data) => {
-          if (version !== stateVersion) return
           if (event === 'start') {
             rt.status = 'running'
             if (data.config) {
@@ -220,7 +214,6 @@ export const useAgentStore = defineStore('agent', () => {
         },
 
         onDone: (data) => {
-          if (version !== stateVersion) return
           rt.status   = 'done'
           rt.duration = Date.now() - startTime
           if (data.lastReport && !rt.reportMeta) rt.reportMeta = data.lastReport
@@ -228,19 +221,17 @@ export const useAgentStore = defineStore('agent', () => {
         },
 
         onError: (err) => {
-          if (version !== stateVersion) return
           rt.status = 'error'
           rt.answer = rt.answer || '网络错误，请重试'
           currentTask.value = null
           appStore.toast.error(err.message)
         },
+
+        onSettled: () => {
+          running.value = false
+        },
       }
     )
-
-    if (abortController === controller) {
-      abortController = null
-      running.value = false
-    }
   }
 
   function clearTasks() {
@@ -248,8 +239,7 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function stopTask() {
-    abortController?.abort()
-    abortController = null
+    runSseTask.abort()
     running.value = false
     if (currentTask.value?.status === 'running') {
       currentTask.value.status = 'cancelled'

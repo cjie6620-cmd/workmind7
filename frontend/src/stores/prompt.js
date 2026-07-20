@@ -2,8 +2,8 @@
 // Prompt 调试模块状态：单次测试、A/B 对比、模板管理
 import { defineStore } from 'pinia'
 import { ref, reactive } from 'vue'
-import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 
 export const usePromptStore = defineStore('prompt', () => {
@@ -30,7 +30,7 @@ export const usePromptStore = defineStore('prompt', () => {
   })
 
   const testing = ref(false)
-  let testAbortController = null
+  const testTask = useSseTask(() => stateVersion)
 
   async function runTest() {
     if (!testConfig.userMessage.trim() || testing.value) return
@@ -39,11 +39,8 @@ export const usePromptStore = defineStore('prompt', () => {
     testResult.streaming = true
 
     const startMs = Date.now()
-    const controller = new AbortController()
-    const version = stateVersion
-    testAbortController = controller
 
-    await fetchStream(
+    await testTask.run(
       '/api/prompt/test/stream',
       {
         systemPrompt: testConfig.systemPrompt,
@@ -52,13 +49,10 @@ export const usePromptStore = defineStore('prompt', () => {
         maxTokens:    testConfig.maxTokens,
       },
       {
-        signal: controller.signal,
         onToken: (token) => {
-          if (version !== stateVersion) return
           testResult.content += token
         },
         onDone: (data) => {
-          if (version !== stateVersion) return
           testResult.latencyMs    = data.latencyMs || (Date.now() - startMs)
           testResult.inputTokens  = data.inputTokens  || 0
           testResult.outputTokens = data.outputTokens || 0
@@ -68,19 +62,16 @@ export const usePromptStore = defineStore('prompt', () => {
           testing.value = false
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           testResult.streaming = false
           testing.value = false
           appStore.toast.error(err.message || '测试失败')
         },
+        onSettled: () => {
+          testResult.streaming = false
+          testing.value = false
+        },
       }
     )
-
-    if (testAbortController === controller) {
-      testAbortController = null
-      testResult.streaming = false
-      testing.value = false
-    }
   }
 
   // ── A/B 测试状态 ────────────────────────────────────────────
@@ -104,7 +95,7 @@ export const usePromptStore = defineStore('prompt', () => {
   })
 
   const abTesting = ref(false)
-  let abAbortController = null
+  const abTask = useSseTask(() => stateVersion)
 
   /**
    * A/B 双流对比测试。服务端事件协议：
@@ -120,11 +111,8 @@ export const usePromptStore = defineStore('prompt', () => {
     abResult.streamingA = true
     abResult.streamingB = true
     abResult.scoring = false
-    const controller = new AbortController()
-    const version = stateVersion
-    abAbortController = controller
 
-    await fetchStream(
+    await abTask.run(
       '/api/prompt/ab-test/stream',
       {
         question:      abConfig.question,
@@ -134,9 +122,7 @@ export const usePromptStore = defineStore('prompt', () => {
         maxTokens:     abConfig.maxTokens,
       },
       {
-        signal: controller.signal,
         onEvent(event, data) {
-          if (version !== stateVersion) return
           switch (event) {
             case 'token_a': abResult.answerA += data.token; break
             case 'token_b': abResult.answerB += data.token; break
@@ -160,29 +146,25 @@ export const usePromptStore = defineStore('prompt', () => {
           }
         },
         onDone() {
-          if (version !== stateVersion) return
           abResult.streamingA = false
           abResult.streamingB = false
           abResult.scoring = false
           abTesting.value = false
         },
         onError(err) {
-          if (version !== stateVersion) return
           abResult.streamingA = false
           abResult.streamingB = false
           abTesting.value = false
           appStore.toast.error(err.message || 'A/B 测试失败')
         },
+        onSettled() {
+          abResult.streamingA = false
+          abResult.streamingB = false
+          abResult.scoring = false
+          abTesting.value = false
+        },
       }
     )
-
-    if (abAbortController === controller) {
-      abAbortController = null
-      abResult.streamingA = false
-      abResult.streamingB = false
-      abResult.scoring = false
-      abTesting.value = false
-    }
   }
 
   // ── 模板管理 ────────────────────────────────────────────────
@@ -260,10 +242,8 @@ export const usePromptStore = defineStore('prompt', () => {
   }
 
   function stopStreams() {
-    testAbortController?.abort()
-    abAbortController?.abort()
-    testAbortController = null
-    abAbortController = null
+    testTask.abort()
+    abTask.abort()
     testing.value = false
     testResult.streaming = false
     abTesting.value = false

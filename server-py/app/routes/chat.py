@@ -18,7 +18,6 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.sse import EventSourceResponse
 
@@ -27,7 +26,7 @@ from ..auth.models import UserContext
 from ..config import config
 from ..services.model import get_chat_model
 from ..services.cache import build_cache_context, cache
-from ..routes.monitor import record_api_call
+from ..services.usage_monitor import record_api_call
 from ..services.chat.memory import (
     get_history_db,
     trim_history,
@@ -46,6 +45,7 @@ from ..schemas.requests import ChatFeedbackRequest, ChatRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 from ..utils.session_guard import assert_session_owner, normalize_chat_session_id
+from ..utils.responses import error_response
 
 chat_router = APIRouter()
 
@@ -70,7 +70,7 @@ async def chat_stream(
     user_id = user.user_id
 
     if check_injection(message):
-        return JSONResponse(status_code=400, content={"error": {"message": "输入内容不符合使用规范"}})
+        return error_response(400, "输入内容不符合使用规范")
 
     await assert_session_owner(session_id, user_id)
 
@@ -289,7 +289,7 @@ async def save_chat_feedback(
     """记录当前用户对助手回答的有用/无用反馈。"""
     updated = await set_message_feedback(message_id, user.user_id, req.rating)
     if not updated:
-        return JSONResponse(status_code=404, content={"error": {"message": "消息不存在"}})
+        return error_response(404, "消息不存在")
     return {"success": True, "rating": req.rating}
 
 

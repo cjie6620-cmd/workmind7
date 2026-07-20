@@ -13,8 +13,9 @@ from fastapi import HTTPException
 from langchain_openai import ChatOpenAI
 from sqlalchemy.dialects import postgresql
 
-from app.routes import monitor
+# 监控记录/聚合逻辑已下沉 services.usage_monitor（routes/monitor 只剩 HTTP 端点）
 from app.services import budget_guard, interceptor
+from app.services import usage_monitor as monitor
 from app.services.budget_guard import BudgetReservation
 from app.services.pricing import calculate_token_cost, get_pricing
 from app.utils.business_time import (
@@ -327,7 +328,7 @@ async def test_monitor_stats_exposes_configured_pricing_source(monkeypatch):
     )
     monkeypatch.setattr(budget_guard, "load_budget", AsyncMock(return_value=50.0))
 
-    stats = await monitor.get_stats()
+    stats = await monitor.build_stats_payload()
 
     pricing = stats["overview"]["pricing"]
     assert stats["overview"]["statsSource"] == "database"

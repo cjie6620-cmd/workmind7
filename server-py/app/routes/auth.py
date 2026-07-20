@@ -27,6 +27,7 @@ from ..auth.models import LoginRequest, RefreshRequest, TokenResponse
 from ..auth.token_store import consume_refresh_jti, register_refresh_jti, revoke_refresh_jti
 from ..auth.users import AuthStoreUnavailable, authenticate as authenticate_user, get_user_by_id
 from ..utils.logger import logger
+from ..utils.responses import error_response
 
 auth_router = APIRouter()
 
@@ -38,15 +39,7 @@ def _auth_store_unavailable_response(operation: str, error: Exception) -> JSONRe
         "认证存储不可用",
         {"operation": operation, "errorType": type(cause).__name__},
     )
-    return JSONResponse(
-        status_code=503,
-        content={
-            "error": {
-                "code": "AUTH_STORE_UNAVAILABLE",
-                "message": "认证服务暂不可用，请稍后重试",
-            }
-        },
-    )
+    return error_response(503, "认证服务暂不可用，请稍后重试", code="AUTH_STORE_UNAVAILABLE")
 
 
 async def _token_response(user_id: str, username: str, role: str) -> dict:
@@ -74,10 +67,7 @@ async def login(req: LoginRequest):
     except AuthStoreUnavailable as err:
         return _auth_store_unavailable_response("login", err)
     if not record:
-        return JSONResponse(
-            status_code=401,
-            content={"error": {"code": "INVALID_CREDENTIALS", "message": "用户名或密码错误"}},
-        )
+        return error_response(401, "用户名或密码错误", code="INVALID_CREDENTIALS")
     try:
         return await _token_response(record.user_id, record.username, record.role)
     except Exception as err:
@@ -95,20 +85,14 @@ async def refresh(req: RefreshRequest):
         user_id = str(subject)
         jti = str(payload.get("jti") or "")
     except jwt.PyJWTError:
-        return JSONResponse(
-            status_code=401,
-            content={"error": {"code": "INVALID_TOKEN", "message": "refresh token 无效或已过期"}},
-        )
+        return error_response(401, "refresh token 无效或已过期", code="INVALID_TOKEN")
 
     try:
         current_user = await get_user_by_id(user_id)
     except Exception as err:
         return _auth_store_unavailable_response("refresh", err)
     if not current_user:
-        return JSONResponse(
-            status_code=401,
-            content={"error": {"code": "INVALID_TOKEN", "message": "refresh token 对应用户不存在"}},
-        )
+        return error_response(401, "refresh token 对应用户不存在", code="INVALID_TOKEN")
 
     # 一次性消费旧 jti：已被轮换/吊销/重放的 token 在此失败。
     try:
@@ -116,10 +100,7 @@ async def refresh(req: RefreshRequest):
     except Exception as err:
         return _auth_store_unavailable_response("refresh", err)
     if not rotated:
-        return JSONResponse(
-            status_code=401,
-            content={"error": {"code": "INVALID_TOKEN", "message": "refresh token 已失效，请重新登录"}},
-        )
+        return error_response(401, "refresh token 已失效，请重新登录", code="INVALID_TOKEN")
 
     try:
         return await _token_response(current_user.user_id, current_user.username, current_user.role)

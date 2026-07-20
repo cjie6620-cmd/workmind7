@@ -18,3 +18,11 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+
+# 无类型标注的第三方库按模块豁免（filetype 为可选依赖、jieba 无 stubs）；禁止全局 ignore_missing_imports
+[[tool.mypy.overrides]]
+module = ["jieba", "filetype"]
+ignore_missing_imports = true

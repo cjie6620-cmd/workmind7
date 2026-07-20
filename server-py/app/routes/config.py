@@ -12,7 +12,6 @@
 """
 
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse
 
 from ..services.config.config_service import (
     list_configs,
@@ -24,6 +23,7 @@ from ..services.config.config_service import (
 )
 from ..services.config.validation import validate_config_payload
 from ..schemas.requests import ConfigCreateRequest, ConfigUpdateRequest
+from ..utils.responses import error_response
 
 config_router = APIRouter()
 
@@ -32,9 +32,9 @@ config_router = APIRouter()
 async def list_configs_api(config_type: str = Query(None, alias="type")):
     """按类型查询配置列表"""
     if not config_type:
-        return JSONResponse(status_code=400, content={"error": {"message": "缺少 type 参数"}})
+        return error_response(400, "缺少 type 参数")
     if config_type not in ("prompt", "agent", "workflow"):
-        return JSONResponse(status_code=400, content={"error": {"message": f"不支持的配置类型：{config_type}"}})
+        return error_response(400, f"不支持的配置类型：{config_type}")
     configs = await list_configs(config_type)
     return {"configs": configs}
 
@@ -44,7 +44,7 @@ async def get_config_api(config_id: str):
     """获取单条配置详情"""
     config = await get_config(config_id)
     if not config:
-        return JSONResponse(status_code=404, content={"error": {"message": "配置不存在"}})
+        return error_response(404, "配置不存在")
     return config
 
 
@@ -56,7 +56,7 @@ async def create_config_api(req: ConfigCreateRequest):
         config = await create_config(req.configType, req.name, req.configJson)
         return {"success": True, "config": config}
     except ValueError as err:
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))
 
 
 @config_router.put("/{config_id}")
@@ -65,7 +65,7 @@ async def update_config_api(config_id: str, req: ConfigUpdateRequest):
     try:
         existing = await get_config(config_id)
         if not existing:
-            return JSONResponse(status_code=404, content={"error": {"message": "配置不存在"}})
+            return error_response(404, "配置不存在")
         next_name = req.name if req.name is not None else existing["name"]
         next_json = req.configJson if req.configJson is not None else existing["configJson"]
         validate_config_payload(existing["configType"], next_name, next_json)
@@ -79,7 +79,7 @@ async def update_config_api(config_id: str, req: ConfigUpdateRequest):
     except ValueError as err:
         message = str(err)
         status = 409 if "已被其他请求更新" in message else 400
-        return JSONResponse(status_code=status, content={"error": {"message": message}})
+        return error_response(status, message)
 
 
 @config_router.delete("/{config_id}")
@@ -89,7 +89,7 @@ async def delete_config_api(config_id: str):
         await delete_config(config_id)
         return {"success": True}
     except ValueError as err:
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))
 
 
 @config_router.post("/{config_id}/activate")
@@ -99,7 +99,7 @@ async def activate_config_api(config_id: str):
         config = await toggle_active(config_id, True)
         return {"success": True, "config": config}
     except ValueError as err:
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))
 
 
 @config_router.post("/{config_id}/deactivate")
@@ -109,4 +109,4 @@ async def deactivate_config_api(config_id: str):
         config = await toggle_active(config_id, False)
         return {"success": True, "config": config}
     except ValueError as err:
-        return JSONResponse(status_code=400, content={"error": {"message": str(err)}})
+        return error_response(400, str(err))

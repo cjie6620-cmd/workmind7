@@ -19,7 +19,6 @@ import uuid
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
 from sse_starlette.event import JSONServerSentEvent
 from sse_starlette.sse import EventSourceResponse
 
@@ -38,6 +37,7 @@ from ..utils.sse_disconnect import pump_queue_events
 from ..utils.logger import logger
 from ..utils.session_guard import assert_session_owner
 from ..utils.agent_context import agent_user_scope
+from ..utils.responses import error_response
 
 agent_router = APIRouter()
 
@@ -103,18 +103,18 @@ async def agent_run(
 
     # 参数校验
     if not task:
-        return JSONResponse(status_code=400, content={"error": {"message": "任务不能为空"}})
+        return error_response(400, "任务不能为空")
     if len(task) > 2000:
-        return JSONResponse(status_code=400, content={"error": {"message": "任务描述过长，请简洁描述"}})
+        return error_response(400, "任务描述过长，请简洁描述")
     if check_injection(task):
-        return JSONResponse(status_code=400, content={"error": {"message": "输入内容不符合使用规范"}})
+        return error_response(400, "输入内容不符合使用规范")
 
     try:
         runtime_config, config_meta = await _resolve_agent_config(req.configId)
     except LookupError as err:
-        return JSONResponse(status_code=404, content={"error": {"message": str(err)}})
+        return error_response(404, str(err))
     except RuntimeError as err:
-        return JSONResponse(status_code=409, content={"error": {"message": str(err)}})
+        return error_response(409, str(err))
 
     # 使用队列 + 事件机制实现异步通信
     queue: asyncio.Queue[JSONServerSentEvent] = asyncio.Queue()
@@ -283,7 +283,7 @@ async def agent_report_detail(report_id: str, user: UserContext = Depends(get_cu
 
     report = await get_report(report_id, user.user_id)
     if not report:
-        return JSONResponse(status_code=404, content={"error": {"message": "报告不存在或已过期"}})
+        return error_response(404, "报告不存在或已过期")
     return {"report": report}
 
 
@@ -295,7 +295,7 @@ async def agent_report_download(report_id: str, user: UserContext = Depends(get_
 
     report = await get_report(report_id, user.user_id)
     if not report:
-        return JSONResponse(status_code=404, content={"error": {"message": "报告不存在或已过期"}})
+        return error_response(404, "报告不存在或已过期")
     title = report["meta"]["title"]
     content = report["content"]
     return Response(
@@ -312,7 +312,7 @@ async def agent_report_delete(report_id: str, user: UserContext = Depends(get_cu
 
     ok = await delete_report(report_id, user.user_id)
     if not ok:
-        return JSONResponse(status_code=500, content={"error": {"message": "删除失败"}})
+        return error_response(500, "删除失败")
     return {"success": True}
 
 

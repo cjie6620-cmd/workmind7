@@ -2,8 +2,8 @@
 // 工作流模块状态：模板选择、节点执行状态、人工审核、结果
 import { defineStore } from 'pinia'
 import { ref, reactive } from 'vue'
-import { fetchStream } from '@/utils/http.js'
 import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 
 export const useWorkflowStore = defineStore('workflow', () => {
@@ -109,10 +109,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
   // streamBuffer：最后一个节点流式输出的累积内容
   const streamBuffer = ref('')
   const PENDING_RUN_KEY = 'wm_workflow_pending_run'
-  let abortController = null
   let pendingPollTimer = null
   // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
+  // start 与 resume 复用同一任务槽（二者互斥，不会并发运行）
+  const streamTask = useSseTask(() => stateVersion)
 
   function initializeNodeStates() {
     for (const key of Object.keys(nodeStates)) delete nodeStates[key]
@@ -189,17 +190,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     if (!selectedTemplate.value) return
     resetRunState()
     running.value = true
-    const controller = new AbortController()
-    abortController = controller
-    const version = stateVersion
 
-    await fetchStream(
+    await streamTask.run(
       '/api/workflow/start/stream',
       { workflowId: selectedTemplate.value, input },
       {
-        signal: controller.signal,
         onEvent: (event, data) => {
-          if (version !== stateVersion) return
           if (event === 'start') {
             currentThreadId.value = data.threadId
             persistPendingRun()
@@ -233,18 +229,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
           }
         },
         onDone: () => {
-          if (version !== stateVersion) return
           running.value = false
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           running.value = false
           appStore.toast.error(err.message || '工作流执行失败')
         },
       }
     )
-
-    if (abortController === controller) abortController = null
   }
 
   // ── 恢复工作流（注入人工反馈后继续）──────────────────────
@@ -254,21 +246,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
     paused.value  = false
     nodeStates['human_review'] = 'done'
     streamBuffer.value = ''
-    const controller = new AbortController()
-    abortController = controller
-    const version = stateVersion
 
-    await fetchStream(
+    await streamTask.run(
       '/api/workflow/resume/stream',
       { threadId: currentThreadId.value, feedback },
       {
-        signal: controller.signal,
         onToken: (token) => {
-          if (version !== stateVersion) return
           streamBuffer.value += token
         },
         onEvent: (event, data) => {
-          if (version !== stateVersion) return
           if (event === 'node_start') {
             nodeStates[data.nodeId] = 'running'
           }
@@ -292,14 +278,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
           }
         },
         onDone: () => {
-          if (version !== stateVersion) return
           if (!paused.value && streamBuffer.value && !result.value) {
             result.value = streamBuffer.value
           }
           running.value = false
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           running.value = false
           if (err.status === 404) {
             currentThreadId.value = ''
@@ -314,13 +298,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
         },
       }
     )
-
-    if (abortController === controller) abortController = null
   }
 
   function stopStream() {
-    abortController?.abort()
-    abortController = null
+    streamTask.abort()
     running.value = false
     clearPendingRun()
   }
@@ -328,8 +309,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   // 仅断开 UI 推送、保留待恢复凭据（供 SPA 离开/返回后刷新恢复）；
   // PENDING_RUN_KEY 只在显式取消/完成/重置时清除。
   function detach() {
-    abortController?.abort()
-    abortController = null
+    streamTask.abort()
     running.value = false
     if (pendingPollTimer) {
       clearTimeout(pendingPollTimer)

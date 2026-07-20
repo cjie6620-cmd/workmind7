@@ -2,7 +2,8 @@
 // 知识库模块状态：文档列表、上传、问答
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import http, { fetchStream } from '@/utils/http.js'
+import http from '@/utils/http.js'
+import { useSseTask } from '@/composables/useSseTask.js'
 import { useAppStore } from './app.js'
 
 export const useKnowledgeStore = defineStore('knowledge', () => {
@@ -138,7 +139,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const querying     = ref(false)
   const filterCategory = ref('')
   const sessionId    = ref('')   // 当前会话 ID
-  let queryController = null
+  const queryTask = useSseTask(() => stateVersion)
 
   let msgId = 0
 
@@ -201,22 +202,15 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     // 取数组内的响应式代理引用；直接改裸对象不会触发视图更新（流式会卡死）。
     const aiMsg = messages.value[messages.value.length - 1]
 
-    const controller = new AbortController()
-    const version = stateVersion
-    queryController = controller
-
-    await fetchStream(
+    await queryTask.run(
       '/api/knowledge/query/stream',
       { question, category: filterCategory.value || undefined, sessionId: sessionId.value || undefined },
       {
-        signal: controller.signal,
         onToken: (token) => {
-          if (version !== stateVersion) return
           aiMsg.content += token
           aiMsg.status = ''
         },
         onEvent: (event, data) => {
-          if (version !== stateVersion) return
           if (event === 'sources') {
             aiMsg.sources = normalizeSources(data.sources)
           }
@@ -225,7 +219,6 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           }
         },
         onDone: (data) => {
-          if (version !== stateVersion) return
           aiMsg.streaming = false
           aiMsg.status = ''
           if (data.sessionId) {
@@ -234,19 +227,16 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
           }
         },
         onError: (err) => {
-          if (version !== stateVersion) return
           aiMsg.streaming = false
           aiMsg.status = ''
           aiMsg.content = aiMsg.content || '查询失败，请重试。'
           appStore.toast.error(err.message)
         },
+        onSettled: () => {
+          querying.value = false
+        },
       }
     )
-
-    if (queryController === controller) {
-      queryController = null
-      querying.value = false
-    }
   }
 
   function clearMessages() {
@@ -254,8 +244,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   }
 
   function stopQuery() {
-    queryController?.abort()
-    queryController = null
+    queryTask.abort()
     querying.value = false
     const lastMessage = messages.value[messages.value.length - 1]
     if (lastMessage?.streaming) {

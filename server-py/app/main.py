@@ -15,7 +15,6 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
 
 from .config import config, validate_config
 from .middleware import setup_middleware
@@ -29,10 +28,12 @@ from .routes.agent import agent_router
 from .routes.workflow import workflow_router
 from .routes.erp import erp_router
 from .routes.prompt import prompt_router
-from .routes.monitor import monitor_router, start_flush_task, stop_flush_task
+from .routes.monitor import monitor_router
+from .services.usage_monitor import start_flush_task, stop_flush_task
 from .routes.config import config_router
 from .routes.auth import auth_router
 from .auth.dependencies import get_current_user, require_admin
+from .utils.responses import error_response
 
 
 @asynccontextmanager
@@ -158,7 +159,7 @@ async def lifespan(app: FastAPI):
 
     # 加载预算配置
     try:
-        from .routes.monitor import load_budget_from_db
+        from .services.usage_monitor import load_budget_from_db
 
         await load_budget_from_db()
         print("Budget config loaded.", file=sys.stderr)
@@ -219,20 +220,14 @@ setup_middleware(app)
 # ── 全局异常处理器：统一 {"error":{code,message}} 契约，避免纯文本 500 与细节泄露 ──
 @app.exception_handler(AppError)
 async def _handle_app_error(request: Request, exc: AppError):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.user_message}},
-    )
+    return error_response(exc.status_code, exc.user_message, code=exc.code)
 
 
 @app.exception_handler(Exception)
 async def _handle_unexpected_error(request: Request, exc: Exception):
     # 详细堆栈只进日志；对客户端返回通用文案，不泄露内部细节。
     logger.error("unhandled exception", {"path": request.url.path, "errorType": type(exc).__name__})
-    return JSONResponse(
-        status_code=500,
-        content={"error": {"code": "INTERNAL_ERROR", "message": "服务器内部错误，请稍后重试"}},
-    )
+    return error_response(500, "服务器内部错误，请稍后重试", code="INTERNAL_ERROR")
 
 
 # ── 路由注册 ───────────────────────────────────────────────────
@@ -254,5 +249,5 @@ app.include_router(config_router, prefix="/api/configs", tags=["configs"], depen
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def catch_all(path: str):
     if path.startswith("api/"):
-        return JSONResponse(status_code=404, content={"error": {"message": f"接口不存在: /{path}"}})
-    return JSONResponse(status_code=404, content={"error": {"message": "接口不存在"}})
+        return error_response(404, f"接口不存在: /{path}")
+    return error_response(404, "接口不存在")
