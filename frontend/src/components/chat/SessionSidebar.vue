@@ -113,7 +113,6 @@ async function deleteSession(id) {
   cursor: pointer;
   transition: all var(--transition);
   position: relative;
-  group: true;
 }
 .session-item:hover { background: var(--color-border-light); }
 .session-item.active { background: var(--color-primary-bg); }

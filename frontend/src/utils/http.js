@@ -53,6 +53,11 @@ http.interceptors.response.use(
       return Promise.reject(error)
     }
 
+    // 401 处理：全局只允许一个刷新在途（isRefreshing 单飞），期间到达的 401 请求
+    // 进入 refreshQueue 挂起；刷新成功后统一用新 token 重放，失败则统一登出。
+    // 每个请求最多重试一次（_retry 标记），防止新 token 仍无效时进入刷新死循环。
+    // 注：authStore.refresh() 内部还有一层 Promise 单飞，两层语义不同——
+    // 这里控制"排队重放请求"，那里保证"并发调用共享同一个刷新请求"。
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       if (originalRequest.url?.includes('/auth/refresh') || originalRequest.url?.includes('/auth/login')) {
         expireSession(authStore)
@@ -118,6 +123,14 @@ http.interceptors.response.use(
 )
 
 // ── SSE 流式请求工具 ───────────────────────────────────────────
+/**
+ * POST + ReadableStream 消费 SSE（EventSource 不支持 POST/自定义头）。
+ *
+ * 终态状态机 terminal ∈ {pending, done, error}：
+ * - 服务端必须以 done 或 error 事件显式收尾；terminal 仍为 pending 时流被
+ *   关闭（EOF）视为断流错误，绝不把断连当成功（防止半截回答被当完整结果）
+ * - 401 自动刷新一次并重放；abort 返回 {status:'aborted'} 且不触发 onError
+ */
 export async function fetchStream(url, body, { onToken, onEvent, onDone, onError, signal } = {}) {
   const authStore = useAuthStore()
   const fetchUrl = import.meta.env.DEV

@@ -1,16 +1,17 @@
 """
-会话记忆管理模块
+会话记忆管理模块（PostgreSQL，SQLAlchemy async）
 
-提供两大功能：
-1. 短期记忆（会话历史）：存储在 PostgreSQL
-2. 用户画像（跨会话）：存储在 PostgreSQL
+三块职责：
+1. 会话历史（短期记忆）：消息读写、按 token 预算裁剪上下文（trim_history）、
+   会话列表 list_sessions_by_prefix（聚合 + DISTINCT ON 取标题，避免 N+1）
+2. 用户画像（跨会话长期记忆）：LLM 结构化抽取 + 字段级合并，
+   fire_and_forget_profile 在回答完成后异步更新，不阻塞对话
+3. 消息反馈：点赞点踩写入消息 metadata
 
-特点：
-- 异步操作，基于 asyncpg
-- 自动裁剪避免超出 token 限制
+会话历史是业务数据而非缓存，删除仅在用户显式清除时发生。
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 
 from ..model import get_chat_model
@@ -196,9 +197,10 @@ def trim_history(history: List[dict], max_tokens=2000) -> List[dict]:
 
 async def get_profile(user_id: str) -> dict:
     """
-    获取用户画像（从 PostgreSQL 的 metadata 中读取）
+    获取用户画像（snake_case 内部格式）
 
-    简化实现：用户画像存储在 agent_configs 表
+    存储位置：agent_configs 表中 config_type='profile'、name='profile_{user_id}'
+    的记录，画像字段在 config_json 里（复用配置表避免为画像单独建表）。
     """
     from sqlalchemy import select
     from ...models.entities import AgentConfig
@@ -314,16 +316,16 @@ def profile_to_context(profile):
 
 
 class UserProfile(BaseModel):
-    """用户画像数据模型"""
+    """用户画像结构化提取结果（LLM 输出经 parse_with_retry 校验）"""
 
-    has_info: bool
-    name: Optional[str] = None
-    dept: Optional[str] = None
-    tech_level: Optional[Literal["初级", "中级", "高级", "架构师"]] = None
-    primary_stack: Optional[List[str]] = None
-    current_goal: Optional[str] = None
-    prefers_short: Optional[bool] = None
-    prefers_code: Optional[bool] = None
+    has_info: bool = Field(description="本轮对话是否包含可更新画像的新信息")
+    name: Optional[str] = Field(default=None, description="用户姓名")
+    dept: Optional[str] = Field(default=None, description="所属部门")
+    tech_level: Optional[Literal["初级", "中级", "高级", "架构师"]] = Field(default=None, description="技术水平")
+    primary_stack: Optional[List[str]] = Field(default=None, description="常用技术栈")
+    current_goal: Optional[str] = Field(default=None, description="当前工作目标")
+    prefers_short: Optional[bool] = Field(default=None, description="偏好简短回答")
+    prefers_code: Optional[bool] = Field(default=None, description="偏好带代码示例")
 
 
 async def extract_and_update_profile(user_id, user_msg, ai_reply):
@@ -373,22 +375,6 @@ def fire_and_forget_profile(user_id, user_msg, ai_reply):
     import asyncio
 
     asyncio.create_task(extract_and_update_profile(user_id, user_msg, ai_reply))
-
-
-# ── 兼容旧代码的同步接口（内存）─────────────────────────────
-
-# 保留内存版本作为向后兼容，某些场景可能需要
-_memory_store: dict[str, list[dict[str, object]]] = {}
-
-
-def get_history_sync(session_id):
-    """同步获取会话历史（从内存，仅向后兼容）"""
-    return _memory_store.get(session_id, [])
-
-
-def clear_history_sync(session_id):
-    """同步删除会话（从内存，仅向后兼容）"""
-    _memory_store.pop(session_id, None)
 
 
 async def list_sessions_by_prefix(

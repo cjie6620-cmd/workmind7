@@ -1,4 +1,8 @@
 // frontend/src/router/index.js
+// 路由表 + 全局守卫。meta 约定：
+// - public: true    → 免登录访问（仅登录页；已登录访问 /login 会重定向回 /chat）
+// - adminOnly: true → 仅 admin 角色可进（普通用户重定向 /chat；后端接口仍强制校验）
+// 其余路由未登录一律跳 /login 并携带 redirect 回跳参数
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth.js'
 

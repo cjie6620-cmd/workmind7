@@ -57,12 +57,7 @@
           placeholder="文档标题（可选，默认用文件名）"
         />
         <select v-model="form.category" class="input select">
-          <option value="通用">通用</option>
-          <option value="技术文档">技术文档</option>
-          <option value="HR制度">HR 制度</option>
-          <option value="产品手册">产品手册</option>
-          <option value="法律合规">法律合规</option>
-          <option value="业务流程">业务流程</option>
+          <option v-for="c in CATEGORY_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
         </select>
       </div>
 
@@ -89,12 +84,7 @@
         placeholder="文档标题（必填）"
       />
       <select v-model="form.category" class="input select">
-        <option value="通用">通用</option>
-        <option value="技术文档">技术文档</option>
-        <option value="HR制度">HR 制度</option>
-        <option value="产品手册">产品手册</option>
-        <option value="法律合规">法律合规</option>
-        <option value="业务流程">业务流程</option>
+        <option v-for="c in CATEGORY_OPTIONS" :key="c.value" :value="c.value">{{ c.label }}</option>
       </select>
       <textarea
         v-model="form.content"
@@ -119,6 +109,16 @@ import { ref, computed } from 'vue'
 import { useKnowledgeStore } from '@/stores/knowledge.js'
 
 const knStore = useKnowledgeStore()
+
+// 上传时可选的文档分类（文件/文本两种模式共用同一份）
+const CATEGORY_OPTIONS = [
+  { value: '通用', label: '通用' },
+  { value: '技术文档', label: '技术文档' },
+  { value: 'HR制度', label: 'HR 制度' },
+  { value: '产品手册', label: '产品手册' },
+  { value: '法律合规', label: '法律合规' },
+  { value: '业务流程', label: '业务流程' },
+]
 
 const showTextInput = ref(false)
 const isDragging    = ref(false)

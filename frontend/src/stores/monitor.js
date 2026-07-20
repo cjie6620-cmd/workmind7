@@ -1,5 +1,6 @@
 // frontend/src/stores/monitor.js
-// 成本监控 store（第七章完整实现，这里先放基础结构）
+// 用量监控轻量镜像：从后端权威统计拉取预算/消费/调用数，供顶栏预警与看板共用；
+// recordCall 只做防抖刷新（价格与聚合一律由后端计算，前端不做任何计费逻辑）
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import http from '@/utils/http.js'

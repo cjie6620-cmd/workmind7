@@ -1,8 +1,11 @@
+<!-- frontend/src/components/common/ECharts.vue -->
+<!-- ECharts 轻封装：按需注册 Bar/Pie 组件控制包体；option 深监听重绘，卸载时移除监听并 dispose -->
 <template>
   <div ref="chartRef" :style="{ width: '100%', height: height + 'px' }"></div>
 </template>
 
 <script setup>
+// chart 实例用 shallowRef：深层响应式代理 ECharts 实例会拖慢渲染且可能破坏内部状态
 import { ref, onMounted, onUnmounted, watch, shallowRef } from "vue"
 import * as echarts from "echarts/core"
 import { BarChart, PieChart } from "echarts/charts"

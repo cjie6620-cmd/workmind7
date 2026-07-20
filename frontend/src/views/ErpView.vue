@@ -1,4 +1,5 @@
 <!-- frontend/src/views/ErpView.vue -->
+<!-- ERP 审批预演页：报销/请假 tab + 智能填单侧栏 + 审批时间线 + 历史预审记录（模拟，非正式审批） -->
 <template>
   <div class="erp-view">
     <aside class="erp-sidebar">

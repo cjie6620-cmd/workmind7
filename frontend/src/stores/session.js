@@ -1,3 +1,5 @@
+// frontend/src/stores/session.js
+// 账号切换/登出时的业务 store 统一复位入口（由 auth.logout 动态 import，避免循环依赖）
 import { useAgentStore } from './agent.js'
 import { useChatStore } from './chat.js'
 import { useConfigStore } from './config.js'

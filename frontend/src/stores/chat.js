@@ -17,6 +17,7 @@ export const useChatStore = defineStore('chat', () => {
   const currentId   = ref(null)
   const creatingSession = ref(false)
   let initialized = false
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号/会话后过期的响应
   let stateVersion = 0
   let newSessionPromise = null
 
@@ -309,17 +310,8 @@ export const useChatStore = defineStore('chat', () => {
             aiMsgRef.id = data.assistantMessageId
             aiMsgRef.persisted = true
           }
-          // 记录用量
-          if (!data.fromCache) {
-            monitorStore.recordCall({
-              inputTokens:  data.inputTokens || 0,
-              outputTokens: data.outputTokens || 0,
-              fromCache:    false,
-              feature:      'chat',
-            })
-          } else {
-            monitorStore.recordCall({ fromCache: true, feature: 'chat' })
-          }
+          // 触发监控数据防抖刷新（用量与费用由后端权威统计，前端不传参不计费）
+          monitorStore.recordCall()
           // 刷新画像（后台可能更新了）
           loadProfile()
         },

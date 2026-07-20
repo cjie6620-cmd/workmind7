@@ -3,8 +3,11 @@ RAG 评测独立运行器
 
 从命令行运行完整 RAG 评测，输出结构化报告。
 支持两种模式：
-- CI 模式（默认）：模拟评测，零成本，适合 CI 流水线
-- Live 模式（--live）：调用真实 DeepSeek API + RAGAS 评测
+- CI 模式（默认）：**输出硬编码的模拟分数**，只验证评测管线能跑通、报告格式正确，
+  ⚠️ 不构成任何质量证据，禁止把 CI 模式的 PASS/FAIL 当作真实回归结论。
+  真实质量门禁见 tests/evaluation/（golden dataset + Non-LLM 指标 / RAGAS 阈值）。
+- Live 模式（--live）：调用真实 DeepSeek API + RAGAS 评测（产生费用）。
+  reranker 维度当前即使 --live 也仅输出阈值对比示例框架，不是真实消融结论。
 
 用法：
     python scripts/run_rag_eval.py

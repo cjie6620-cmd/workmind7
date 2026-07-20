@@ -430,19 +430,3 @@ async def settle_budget_after_llm(
             model_name=reservation.model_name,
         ).cny
     await settle_budget_reservation(reservation, actual_cost)
-
-
-async def check_budget_before_llm(
-    input_value: Any = None,
-    *,
-    model_name: str | None = None,
-    max_output_tokens: int | None = None,
-    target_day: date | None = None,
-) -> BudgetReservation:
-    """兼容旧调用名，返回必须在调用结束后结算的预留凭据。"""
-    return await reserve_budget_before_llm(
-        input_value,
-        model_name=model_name,
-        max_output_tokens=max_output_tokens,
-        target_day=target_day,
-    )

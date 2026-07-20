@@ -90,7 +90,7 @@ def build_weekly_report():
         return {"risks": await chain.ainvoke({"points": state["points"]})}
 
     def human_review(state: WeeklyReportState):
-        """节点3：人工审核（中断节点）"""
+        """节点3：人工审核（interrupt_before 在此暂停，等待用户意见后恢复）"""
         logger.info("workflow:weekly → humanReview (waiting)")
         return {}  # 空更新，等待用户反馈
 
@@ -185,6 +185,7 @@ def build_meeting_minutes():
     """
 
     async def extract_attendees(state: MeetingMinutesState):
+        """节点1：提取参会人与主要议题"""
         logger.info("workflow:meeting → extractAttendees")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -199,6 +200,7 @@ def build_meeting_minutes():
         return {"attendees": await chain.ainvoke({"raw_notes": state["raw_notes"]})}
 
     async def extract_conclusions(state: MeetingMinutesState):
+        """节点2：提取会议结论与决策"""
         logger.info("workflow:meeting → extractConclusions")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -216,6 +218,7 @@ def build_meeting_minutes():
         return {"conclusions": await chain.ainvoke({"raw_notes": state["raw_notes"]})}
 
     async def extract_actions(state: MeetingMinutesState):
+        """节点3：整理 Action Items（负责人/事项/截止时间）"""
         logger.info("workflow:meeting → extractActions")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -235,9 +238,11 @@ def build_meeting_minutes():
         return {"action_items": await chain.ainvoke({"raw_notes": state["raw_notes"]})}
 
     def human_review(state: MeetingMinutesState):
+        """人工审核节点：interrupt_before 在此暂停，等待用户意见后恢复"""
         return {}
 
     async def generate_minutes(state: MeetingMinutesState):
+        """节点5：结合人工修改意见生成正式纪要"""
         logger.info("workflow:meeting → generateMinutes")
         today = business_date().strftime("%Y/%m/%d")
         feedback_note = f"\n修改意见：{state['human_feedback']}" if state.get("human_feedback") else ""
@@ -321,6 +326,7 @@ def build_email_polish():
     """
 
     async def analyze_intent(state: EmailPolishState):
+        """节点1：分析邮件意图与目标读者"""
         logger.info("workflow:email → analyzeIntent")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -335,6 +341,7 @@ def build_email_polish():
         return {"purpose": await chain.ainvoke({"draft": state["draft"], "recipient": state.get("recipient", "对方")})}
 
     async def check_issues(state: EmailPolishState):
+        """节点2：找出表达/语气/结构问题"""
         logger.info("workflow:email → checkIssues")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -354,9 +361,11 @@ def build_email_polish():
         return {"issues": await chain.ainvoke({"draft": state["draft"]})}
 
     def human_review(state: EmailPolishState):
+        """人工审核节点：interrupt_before 在此暂停，等待用户意见后恢复"""
         return {}
 
     async def polish_email(state: EmailPolishState):
+        """节点4：按分析结果与用户要求润色邮件"""
         logger.info("workflow:email → polishEmail")
         feedback_note = f"\n用户要求：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (
@@ -433,6 +442,7 @@ def build_prd_skeleton():
     """
 
     async def extract_features(state: PrdSkeletonState):
+        """节点1：从需求描述提炼功能点"""
         logger.info("workflow:prd → extractFeatures")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -447,6 +457,7 @@ def build_prd_skeleton():
         return {"features": await chain.ainvoke({"description": state["description"]})}
 
     async def identify_constraints(state: PrdSkeletonState):
+        """节点2：识别技术/合规/资源约束"""
         logger.info("workflow:prd → identifyConstraints")
         chain = (
             ChatPromptTemplate.from_messages(
@@ -467,9 +478,11 @@ def build_prd_skeleton():
         return {"constraints": await chain.ainvoke({"description": state["description"]})}
 
     def human_review(state: PrdSkeletonState):
+        """人工审核节点：interrupt_before 在此暂停，等待用户意见后恢复"""
         return {}
 
     async def generate_prd(state: PrdSkeletonState):
+        """节点4：结合补充说明生成 PRD 骨架"""
         logger.info("workflow:prd → generatePrd")
         feedback_note = f"\n补充说明：{state['human_feedback']}" if state.get("human_feedback") else ""
         chain = (

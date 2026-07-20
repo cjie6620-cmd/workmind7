@@ -1,17 +1,18 @@
 """
 错误处理模块
 
-提供统一的错误分类和 SSE 错误格式化：
-1. AppError: 应用层异常类
-2. classify_error: 根据异常类型分类
-3. send_sse_error: 生成 SSE 格式的错误事件
+提供统一的应用层异常与「上游异常 → 用户可见文案」的分类转换：
+1. AppError: 应用层异常基类（携带 code/status_code/retryable/user_message）
+2. classify_error: 把 LLM / 第三方服务抛出的原始异常归类为 AppError，
+   保证对客户端只暴露安全的通用文案，原始细节由调用方记入日志
 
-错误分类：
-- RATE_LIMIT: API 限流
-- AUTH_ERROR: 认证失败
-- SERVICE_ERROR: 服务不可用
-- TIMEOUT: 请求超时
-- UNKNOWN: 未知错误
+错误分类（code → 场景）：
+- BUDGET_EXCEEDED(402): 日预算已耗尽
+- RATE_LIMIT(429): 上游 API 限流，可重试
+- AUTH_ERROR: 上游凭据无效（属服务端配置问题，对外展示 500 文案）
+- SERVICE_ERROR(503): 上游 5xx / 连接中断，可重试
+- TIMEOUT(504): 上游响应超时，可重试
+- UNKNOWN: 其余异常，不可重试
 """
 
 
@@ -69,6 +70,8 @@ def classify_error(err):
             "API 限流", code="RATE_LIMIT", status_code=429, retryable=True, user_message="请求太频繁，请稍后重试"
         )
     if status in (401, 403):
+        # 上游 401/403 = 我方 API Key 失效/无权限，属服务端配置故障而非用户问题，
+        # 因此对客户端按 500 呈现，避免误导用户去重新登录。
         return AppError(
             "认证失败", code="AUTH_ERROR", status_code=500, retryable=False, user_message="服务配置错误，请联系管理员"
         )
@@ -83,14 +86,3 @@ def classify_error(err):
     if "timeout" in msg.lower():
         return AppError("请求超时", code="TIMEOUT", status_code=504, retryable=True, user_message="响应超时，请重试")
     return AppError(msg, code="UNKNOWN", retryable=False)
-
-
-def send_sse_error(err):
-    """
-    生成 SSE 格式的错误事件（已废弃，请使用 sse.utils.sse.sse_error）
-
-    保留此函数仅为向后兼容，新代码请用 sse_error()
-    """
-    from .sse import sse_error
-
-    return sse_error(err)

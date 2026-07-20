@@ -111,6 +111,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const PENDING_RUN_KEY = 'wm_workflow_pending_run'
   let abortController = null
   let pendingPollTimer = null
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   function initializeNodeStates() {
@@ -354,6 +355,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return true
   }
 
+  /**
+   * 刷新/返回页面后按 localStorage 凭据恢复未完成的运行。
+   * 按服务端快照状态分四支：
+   * - completed → 直接展示结果并清凭据
+   * - running   → 恢复运行态 UI，1.5s 后递归自轮询直到进入终态或暂停
+   * - paused    → 重建"人工审核中"的节点状态，等待用户操作
+   * - 其它终态  → 回到模板选择页（failed 补一条错误提示）
+   */
   async function restorePendingRun() {
     const version = stateVersion
     const raw = localStorage.getItem(PENDING_RUN_KEY)

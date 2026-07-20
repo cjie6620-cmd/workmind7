@@ -1,3 +1,4 @@
+// auth store 测试：本地登出必须同步清除凭据（认证失效跳转不等待远端清理）
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 

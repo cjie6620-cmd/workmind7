@@ -1,7 +1,8 @@
 """
 JWT 认证集成测试
 
-覆盖 W0b-1a DoD：401 门禁、有效 token、refresh、admin 403。
+覆盖：401 门禁、有效 token 访问、refresh 轮换、admin 403、健康探针豁免。
+需要真实 PostgreSQL（种子用户）与 Redis（refresh jti 登记）。
 """
 
 import jwt

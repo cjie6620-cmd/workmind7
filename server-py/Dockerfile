@@ -9,14 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 安装 uv：Docker/CI 统一用锁定文件做 frozen install（T1-03）
 COPY --from=ghcr.io/astral-sh/uv:0.7.12 /uv /usr/local/bin/uv
 
-# T1-05：仓库根目录 uv.lock 仅含少量非 server 依赖，禁止作为本镜像锁定证据。
-# 服务端真相源：requirements.linux-cpu.lock.txt（Linux CPU，torch+cpu，无 nvidia-*）
+# T1-05：服务端依赖唯一真相源是 requirements.linux-cpu.lock.txt
+#（Linux CPU 解析，torch+cpu、无 nvidia-*；重新生成见 scripts/regenerate_linux_cpu_lock.sh）
 COPY requirements.linux-cpu.lock.txt .
 
 RUN uv pip install --system --no-cache \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     --index-strategy unsafe-best-match \
     -r requirements.linux-cpu.lock.txt \
+    && uv pip check --system \
     && python -c "import torch; assert '+cpu' in torch.__version__ or not torch.cuda.is_available(), torch.__version__; print('torch', torch.__version__)"
 
 COPY . .

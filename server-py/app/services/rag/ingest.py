@@ -60,11 +60,7 @@ def filter_docs_for_user(docs, *, user_id, is_admin=False):
     if is_admin:
         return list(docs)
     uid = str(user_id) if user_id is not None else None
-    return [
-        doc
-        for doc in docs
-        if doc.get("ownerUserId") is None or str(doc.get("ownerUserId")) == uid
-    ]
+    return [doc for doc in docs if doc.get("ownerUserId") is None or str(doc.get("ownerUserId")) == uid]
 
 
 def doc_visible_to_user(doc_or_owner, *, user_id, is_admin=False) -> bool:
@@ -90,27 +86,6 @@ async def get_doc_registry():
     _doc_registry.clear()
     _doc_registry.update(snapshot)
     return list(snapshot.values())
-
-
-async def get_doc(doc_id):
-    """以数据库为权威来源获取指定文档，并更新本地缓存。"""
-    try:
-        doc_uuid = uuid.UUID(str(doc_id))
-    except (TypeError, ValueError):
-        return None
-
-    async with async_session_factory() as session:
-        result = await session.execute(select(Document).where(Document.id == doc_uuid))
-        row = result.scalar_one_or_none()
-
-    cache_key = str(doc_uuid)
-    if not row:
-        _doc_registry.pop(cache_key, None)
-        return None
-
-    metadata = _document_meta(row)
-    _doc_registry[cache_key] = metadata
-    return metadata
 
 
 # ── 文本提取 ────────────────────────────────────────────────

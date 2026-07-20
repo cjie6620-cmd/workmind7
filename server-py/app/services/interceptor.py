@@ -77,6 +77,7 @@ def _extract_token_usage(result) -> tuple[int, int, bool]:
 
 
 def _model_name(model: ChatOpenAI) -> str | None:
+    """兼容 langchain 不同版本的模型名属性（model_name / model）。"""
     value = getattr(model, "model_name", None) or getattr(model, "model", None)
     return str(value) if value else None
 
@@ -97,6 +98,7 @@ class MonitoredChatOpenAI(ChatOpenAI):
         raise RuntimeError("MonitoredChatOpenAI.invoke 已禁用（会绕过预算守卫），请使用 ainvoke 或 astream")
 
     async def ainvoke(self, input, config=None, **kwargs):
+        """非流式调用：预算预留 → 调用 → 按实际 usage 结算 → 上报监控（异常也结算）。"""
         from .budget_guard import reserve_budget_before_llm, settle_budget_after_llm
 
         started_at = utc_now_naive()
@@ -145,6 +147,8 @@ class MonitoredChatOpenAI(ChatOpenAI):
         return result
 
     async def astream(self, input, config=None, **kwargs):
+        """流式调用：预算预留 → 逐 chunk 透传并累计 usage → 流结束/异常时结算上报；
+        客户端断连（CancelledError/GeneratorExit）原样上抛且不计入错误率。"""
         from .budget_guard import reserve_budget_before_llm, settle_budget_after_llm
 
         started_at = utc_now_naive()

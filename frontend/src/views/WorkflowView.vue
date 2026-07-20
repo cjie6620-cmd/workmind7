@@ -13,7 +13,6 @@
             :class="{ active: wfStore.selectedTemplate === t.id }"
             @click="selectAndReset(t.id)"
           >
-            <!-- <span class="tpl-icon">{{ t.icon }}</span> -->
             <div class="tpl-info">
               <div class="tpl-title">{{ t.title }}</div>
               <div class="tpl-desc">{{ t.desc }}</div>
@@ -41,7 +40,6 @@
         <!-- 输入阶段 -->
         <div v-if="currentMeta && !wfStore.running && !wfStore.paused && !wfStore.result" class="input-phase">
           <div class="phase-title">
-            <!-- <span class="phase-icon">{{ currentMeta.icon }}</span> -->
             {{ currentMeta.title }}
           </div>
 
@@ -185,7 +183,6 @@ onUnmounted(() => wfStore.detach())
 .template-card { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-radius:var(--radius-lg); border:1.5px solid var(--color-border); cursor:pointer; transition:all var(--transition); background:var(--color-bg); }
 .template-card:hover { border-color:var(--color-primary); }
 .template-card.active { border-color:var(--color-primary); background:var(--color-primary-bg); }
-.tpl-icon { font-size:18px; flex-shrink:0; }
 .tpl-title { font-size:12px; font-weight:600; color:var(--color-text); }
 .tpl-desc { font-size:11px; color:var(--color-text-muted); margin-top:2px; line-height:1.4; }
 
@@ -196,7 +193,6 @@ onUnmounted(() => wfStore.detach())
 .empty-title { font-size:18px; font-weight:600; color:var(--color-text); }
 .empty-desc { font-size:13px; max-width:360px; line-height:1.7; }
 .phase-title { display:flex; align-items:center; gap:10px; font-size:16px; font-weight:700; color:var(--color-text); margin-bottom:var(--space-lg); }
-.phase-icon { font-size:20px; }
 .input-phase { display:flex; flex-direction:column; gap:var(--space-md); max-width:680px; }
 .form-field { display:flex; flex-direction:column; gap:6px; }
 .field-label { font-size:13px; font-weight:600; color:var(--color-text); }

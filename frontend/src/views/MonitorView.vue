@@ -1,4 +1,5 @@
 <!-- frontend/src/views/MonitorView.vue -->
+<!-- 用量看板（admin）：指标卡/预算编辑/费用与调用图表/近调用明细，10s 轮询后端权威统计 -->
 <template>
   <div class="monitor-view">
     <div class="metrics-grid">

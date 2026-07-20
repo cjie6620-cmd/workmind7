@@ -1,4 +1,11 @@
-"""可持久恢复、按用户隔离的内容工作流 API。"""
+"""可持久恢复、按用户隔离的内容工作流 API
+
+生命周期：start（受理即写 Redis running 快照）→ 节点流式推送 → 人工审核暂停
+（paused 快照可跨 worker / 刷新恢复）→ resume（分布式锁 + 复读快照防 TOCTOU）
+→ 终态 completed/failed/cancelled 全部落 Redis（TTL 24h）。
+取消写「墓碑」快照，防止迟到的另一 worker 结果把终态改回可见状态；
+配置停用只阻止新任务启动，不追溯在途/暂停任务。
+"""
 
 import asyncio
 import uuid
@@ -19,6 +26,7 @@ from ..services.workflow.state_store import (
     save_workflow_run,
 )
 from ..services.workflow.workflows import WORKFLOW_BUILDERS, WORKFLOW_META
+from ..utils.background_tasks import wait_or_cancel_tasks
 from ..utils.logger import logger
 from ..utils.sse import sse_error, sse_event
 from ..utils.sse_disconnect import pump_queue_events
@@ -41,14 +49,7 @@ def _track_workflow_task(thread_id: str, task: asyncio.Task) -> asyncio.Task:
 
 async def shutdown_workflow_tasks(timeout_seconds: float = 20) -> None:
     """优雅停机时等待已受理流程落到 Redis 终态，再取消超时任务。"""
-    tasks = [task for task in _workflow_tasks.values() if not task.done()]
-    if not tasks:
-        return
-    _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+    await wait_or_cancel_tasks(_workflow_tasks.values(), timeout_seconds)
 
 
 INTERMEDIATES_MAP = {
@@ -79,6 +80,7 @@ INPUT_SPECS = {
 
 
 def _get_intermediates(values: dict, workflow_id: str) -> list[dict]:
+    """从图状态提取该工作流的中间产物（人工审核面板展示用）。"""
     field_map = INTERMEDIATES_MAP.get(workflow_id, {})
     return [
         {"key": key, "label": label, "value": values.get(key)} for key, label in field_map.items() if values.get(key)
@@ -139,6 +141,7 @@ async def _active_templates() -> list[dict] | None:
 
 
 async def _workflow_is_active(workflow_id: str) -> bool:
+    """判断工作流是否允许启动新任务；无任何配置时回退为内置全启用。"""
     configs = await list_wf_configs("workflow")
     if not configs:
         return workflow_id in WORKFLOW_BUILDERS
@@ -146,6 +149,7 @@ async def _workflow_is_active(workflow_id: str) -> bool:
 
 
 def _public_run(run: dict) -> dict:
+    """把 Redis 快照裁剪为公开契约（不泄露 values/userId 等内部字段）。"""
     public = {
         "threadId": run["threadId"],
         "workflowId": run["workflowId"],
@@ -162,6 +166,7 @@ def _public_run(run: dict) -> dict:
 
 @workflow_router.get("/templates")
 async def get_templates():
+    """返回可启动的工作流模板；配置中心不可用时降级为内置默认列表。"""
     try:
         templates = await _active_templates()
         # 仅在尚未创建任何配置时展示内置默认值；若配置全部停用，必须返回空列表。
@@ -178,6 +183,7 @@ async def get_run(
     thread_id: str,
     user: UserContext = Depends(get_current_user),
 ):
+    """查询运行快照（断线重连/刷新后恢复用）；非本人一律 404 防枚举。"""
     run = await get_workflow_run(thread_id)
     if not run or run.get("userId") != user.user_id:
         return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
@@ -189,6 +195,7 @@ async def cancel_run(
     thread_id: str,
     user: UserContext = Depends(get_current_user),
 ):
+    """显式取消工作流：取分布式锁 → 复读快照 → 写取消墓碑 → 取消本地任务。"""
     run = await get_workflow_run(thread_id)
     if not run or run.get("userId") != user.user_id:
         return JSONResponse(status_code=404, content={"error": {"message": "工作流不存在或已过期"}})
@@ -228,6 +235,11 @@ async def start_workflow_stream(
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
+    """启动工作流：校验入参 → 落 running 快照 → 后台跑图 → SSE 推送节点事件。
+
+    事件契约：start → node_start/node_done/token* →（paused | completed）；
+    异常推 error。受理后断连只停推送，任务继续执行并落终态。
+    """
     workflow_id = req.workflowId
     if workflow_id not in WORKFLOW_BUILDERS:
         return JSONResponse(status_code=400, content={"error": {"message": f"未知工作流：{workflow_id}"}})
@@ -407,6 +419,11 @@ async def resume_workflow_stream(
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
+    """人工审核后恢复暂停的工作流（可跨 worker：按快照重建 checkpoint 续跑）。
+
+    并发防护：分布式锁保证同一 thread 只有一个恢复执行者；
+    取锁后复读快照（TOCTOU），写终态前再复读（不覆盖取消墓碑）。
+    """
     thread_id = req.threadId
     snapshot = await get_workflow_run(thread_id)
     if not snapshot or snapshot.get("userId") != user.user_id:

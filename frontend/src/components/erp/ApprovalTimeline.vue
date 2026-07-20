@@ -47,7 +47,7 @@
     </div>
 
     <!-- 对话区域（右侧） -->
-    <div class="conversation" ref="convEl">
+    <div class="conversation">
       <!-- 空状态 -->
       <div v-if="!erpStore.approvalMessages.length && !erpStore.approving" class="conv-empty">
         <div>预演开始后，各模拟角色的对话将在此显示</div>
@@ -112,7 +112,6 @@ import { ref, watch, nextTick } from 'vue'
 import { useErpStore } from '@/stores/erp.js'
 
 const erpStore = useErpStore()
-const convEl   = ref(null)
 const bottomEl = ref(null)
 
 function stepStatusText(status) {

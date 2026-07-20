@@ -1,4 +1,5 @@
 <!-- frontend/src/views/PromptView.vue -->
+<!-- Prompt 调试页（admin）：单次测试 / A-B 对比 / 模板库三个 tab，与 prompt store 配合 -->
 <template>
   <div class="prompt-view">
     <div class="top-tabs">
@@ -286,7 +287,7 @@ onUnmounted(() => ps.stopStreams())
 .winner-badge { position:absolute; top:12px; right:12px; display:inline-flex; align-items:center; gap:3px; font-size:12px; font-weight:700; color:var(--color-success); }
 .ab-verdict { display:flex; align-items:center; gap:var(--space-md); padding:var(--space-md) var(--space-lg); background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); font-size:14px; font-weight:600; color:var(--color-text); }
 .verdict-reason { font-size:12px; color:var(--color-text-sub); font-weight:400; }
-.ab-scoring { display:flex; align-items:center; gap:8px; padding:12px 16px; color:var(--color-text-secondary); margin-bottom:var(--space-lg); }
+.ab-scoring { display:flex; align-items:center; gap:8px; padding:12px 16px; color:var(--color-text-sub); margin-bottom:var(--space-lg); }
 .cursor-blink { animation:blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity:0; } }
 .template-manager { display:flex; flex:1; overflow:hidden; }

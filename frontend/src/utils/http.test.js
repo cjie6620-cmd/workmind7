@@ -1,3 +1,4 @@
+// fetchStream 契约测试：终态语义（done 前 EOF 视为断流错误）、401 刷新重试、登出不自等待
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({

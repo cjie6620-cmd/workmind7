@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.auth.models import UserContext
-from app.middleware import ChatRequest
+from app.schemas.requests import ChatRequest
 from app.routes.chat import (
     chat_stream,
     delete_user_profile,

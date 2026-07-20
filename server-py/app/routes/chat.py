@@ -2,11 +2,15 @@
 对话路由模块
 
 提供智能对话功能：
-- POST /stream: 流式对话（支持缓存、会话历史、用户画像）
-- GET /sessions: 获取会话列表
-- DELETE /sessions/{session_id}: 删除会话
-- GET /profile: 获取当前用户画像
-- GET /roles: 获取内置角色列表
+- POST /stream: 流式对话（精确缓存、会话历史、用户画像注入、角色系统提示）
+- GET/POST/DELETE /sessions: 会话列表 / 新建 / 删除
+- GET /history/{session_id}: 会话历史
+- GET/DELETE /profile: 用户画像查看 / 清除
+- POST /messages/{id}/feedback: 回答点赞点踩
+- GET /roles: 内置角色列表
+
+流式契约：start → token* → done（或 error）；缓存命中走 cache_hit → token* → done。
+断连时已生成的部分回复带 incomplete 标记落库，用户输入永远先于模型调用落库。
 """
 
 import asyncio
@@ -37,8 +41,8 @@ from ..services.chat.memory import (
     save_message,
     set_message_feedback,
 )
-from ..schemas.requests import ChatFeedbackRequest
-from ..middleware import ChatRequest, check_injection
+from ..middleware import check_injection
+from ..schemas.requests import ChatFeedbackRequest, ChatRequest
 from ..utils.sse import sse_event, sse_error
 from ..utils.logger import logger
 from ..utils.session_guard import assert_session_owner, normalize_chat_session_id
@@ -72,6 +76,7 @@ async def chat_stream(
 
     async def event_generator():
         try:
+            # 第一步：拼装系统提示（角色模板 + 用户画像）与裁剪后的会话上下文
             base_system = ROLES.get(role, ROLES["default"])
             profile = await get_profile(user_id)
             profile_ctx = profile_to_context(profile)
@@ -90,6 +95,7 @@ async def chat_stream(
                 model_context={"name": model_name, "temperature": 0.7},
             )
 
+            # 第二步：精确缓存命中则按打字机节奏回放，不再调用模型
             cached = await asyncio.to_thread(cache.get, cache_context)
             if cached:
                 logger.info("cache hit", {"sessionId": session_id, "msg": message[:30]})
@@ -135,6 +141,7 @@ async def chat_stream(
                 )
                 return
 
+            # 第三步：未命中缓存，流式调用模型并逐 token 推送
             messages = [SystemMessage(system_prompt), *trimmed, HumanMessage(message)]
 
             # 用户消息在模型调用前落库；Provider 失败或用户停止时也不会丢失输入。
@@ -183,6 +190,7 @@ async def chat_stream(
                     )
                 return
 
+            # 第四步：完整回复落库、写缓存、异步更新画像，最后发 done 终态
             assistant_message_id = await save_message(
                 session_id,
                 "assistant",

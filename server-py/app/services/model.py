@@ -1,13 +1,16 @@
 """
-Model 模型工厂模块
+Model 模型工厂模块（对话模型与本地 Embeddings 的唯一创建入口）
 
-注意：langchain_openai 和 sentence_transformers（torch）在 Python 3.14 下
-存在段错误冲突，因此所有模型均采用延迟导入 + 延迟初始化。
+- 所有对话模型都经 MonitoredChatOpenAI 包装（用量监控 + 预算护栏），
+  业务层禁止直接实例化 ChatOpenAI
+- langchain_openai 与 sentence_transformers(torch) 存在导入顺序相关的
+  段错误风险，且 bge-m3 约 2.2GB 加载慢，因此统一延迟导入 + 延迟初始化；
+  生产启动时由 lifespan 在线程池预加载
 
 对外接口：
-- get_chat_model(): 获取对话模型单例
-- create_chat_model(): 创建新的对话模型实例
-- get_embeddings(): 获取向量化模型单例
+- get_chat_model(): 全局对话模型单例（temperature=0.7，流式）
+- create_chat_model(): 按参数新建实例（Agent/Prompt 调试等需自定义参数的场景）
+- get_embeddings(): 本地向量化模型单例
 """
 
 import asyncio

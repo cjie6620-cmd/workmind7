@@ -1,10 +1,12 @@
 """
 认证路由
 
-- POST /login: 用户名密码登录，返回 access + refresh token
-- POST /refresh: 使用 refresh token 换取新 access token
+- POST /login: 用户名密码校验（users 表 + bcrypt），签发 access + refresh token
+- POST /refresh: 一次性消费旧 jti 轮换新 token 对；重放/已吊销的 jti 返回 401
+- POST /logout: 吊销 refresh token 的 jti，幂等（无效 token 也返回成功）
 
-W0b-1b 将接入 users 表与前端 LoginView。
+三个端点均在认证白名单中（凭据来自请求体而非 Authorization 头）。
+jti 登记/消费依赖 Redis，Redis 不可用时 fail-closed 返回 503。
 """
 
 import uuid

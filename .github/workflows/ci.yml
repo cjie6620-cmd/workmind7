@@ -41,14 +41,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          # T1-05: root uv.lock is NOT server evidence; cache the Linux CPU lock instead.
+          # T1-05: the Linux CPU lock is the only server dependency evidence.
           cache-dependency-glob: |
             server-py/requirements.linux-cpu.lock.txt
             server-py/requirements.txt
       - name: Assert Linux CPU lock (T1-02 / T1-05)
         run: |
           set -euo pipefail
-          # T1-05: repository root uv.lock must never be treated as server-py lock evidence.
+          # T1-05: server-py/requirements.linux-cpu.lock.txt is the only lock evidence.
           test -f server-py/requirements.linux-cpu.lock.txt
           if grep -qiE '^nvidia-' server-py/requirements.linux-cpu.lock.txt; then
             echo "FAIL: nvidia-* packages found in Linux CPU lock" >&2
@@ -67,6 +67,8 @@ jobs:
             --index-strategy unsafe-best-match \
             -r server-py/requirements.linux-cpu.lock.txt
           server-py/.venv/bin/python -c "import torch; print(torch.__version__)"
+      - name: Verify transitive dependency completeness (uv pip check)
+        run: uv pip check --python server-py/.venv/bin/python
       - name: Ruff lint and format
         run: |
           cd server-py
@@ -85,6 +87,33 @@ jobs:
           cd server-py
           .venv/bin/python -m alembic upgrade head
           .venv/bin/python -m pytest -m "not live and not slow" -q
+
+  # 锁文件有效性门禁：在 Linux 上跑 regenerate_linux_cpu_lock.sh 原地重解析。
+  # uv pip compile 会把已存在的输出文件（提交的锁）作为版本 preference，
+  # 因此锁完整且自洽时应零漂移；手动最小更新若遗漏/写错传递依赖，此处必失败。
+  # 注意：删除锁后从头解析会跟随上游最新版（如 torch 2.13），那是升级动作而非本门禁语义。
+  lock-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Re-resolve lock in place (committed lock as preference)
+        run: |
+          set -euo pipefail
+          cp server-py/requirements.linux-cpu.lock.txt /tmp/committed.lock.txt
+          bash server-py/scripts/regenerate_linux_cpu_lock.sh
+      - name: Assert zero drift on pinned versions
+        run: |
+          set -euo pipefail
+          grep -E '^[A-Za-z0-9._-]+==' /tmp/committed.lock.txt > /tmp/pins-committed.txt
+          grep -E '^[A-Za-z0-9._-]+==' server-py/requirements.linux-cpu.lock.txt > /tmp/pins-resolved.txt
+          if ! diff -u /tmp/pins-committed.txt /tmp/pins-resolved.txt; then
+            echo "FAIL: committed lock is not a valid fixed-point resolution (transitive deps drifted)" >&2
+            exit 1
+          fi
+          echo "OK: lock re-resolves to identical pins"
 
   frontend:
     runs-on: ubuntu-latest
@@ -141,6 +170,7 @@ jobs:
             --extra-index-url https://download.pytorch.org/whl/cpu \
             --index-strategy unsafe-best-match \
             -r server-py/requirements.linux-cpu.lock.txt
+          uv pip check --python server-py/.venv/bin/python
       - env:
           DEEPSEEK_API_KEY: sk-test-mock
           JWT_SECRET: test-jwt-secret-at-least-32-chars-long

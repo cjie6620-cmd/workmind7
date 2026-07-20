@@ -32,7 +32,7 @@
 
 - **认证对 Redis fail-closed**：refresh token 采用一次性 jti 轮换/吊销，凭据登记在 Redis；Redis 不可用时登录与刷新返回 503（宁拒绝、不降级签发不可轮换的 token）。Redis 可用性告警必须覆盖认证链路。
 - **容器切换非 root 的升级步骤**：后端镜像改为 uid 10001（appuser）运行。全新部署卷属主自动正确；**旧部署已存在的 `wm_uploads`/`wm_hf_cache` 卷可能为 root 属主**，升级前需一次性 `chown -R 10001:10001`（可用临时 root 容器执行），否则上传与 HF 模型缓存写入失败。
-- **torch 2.6.0+cpu 锁文件为手动最小更新**（修复 CVE-2025-32434）：上线前必须在 Linux/CI 用 `scripts/regenerate_linux_cpu_lock.sh` 重新解析全部传递依赖并通过 `uv pip check`。
+- **torch 2.6.0+cpu 锁文件为手动最小更新**（修复 CVE-2025-32434）：已在本机 Linux 容器（python:3.12-slim）完成验证——按锁全量安装 137 包、`uv pip check` 通过、运行时确认 `torch 2.6.0+cpu / sympy 1.13.1`、`regenerate_linux_cpu_lock.sh` 原地重解析零漂移。验证过程纠正一处手工错误：torch 2.6.0 精确固定 `sympy==1.13.1`，此前误升到 1.13.3 会导致解析失败。CI 已加三道门禁：backend/evaluation job 冻结安装后跑 `uv pip check`、独立 `lock-verify` job 原地重解析断言零漂移、后端镜像构建内嵌 `uv pip check --system`。剩余外部验收：GitHub runner 实跑与镜像 smoke。
 
 ## P0：上线阻断
 
@@ -130,7 +130,7 @@
 | 前端 lint / unit / build | ESLint 通过；5 个文件 18 tests passed；生产构建通过，ECharts 独立 chunk 491.57 kB；仅第三方 PURE 注释告警 | 本地通过；完整浏览器 E2E/性能仍待验收 |
 | 浏览器登录 smoke | 未登录访问重定向 `/login?redirect=/chat`；全屏布局、空表单双字段校验通过；控制台 0 warning/error | 通过（仅登录入口） |
 | Compose 静态解析 | 开发与生产配置均通过显式 `docker compose -f ... config --quiet` | 通过（仅静态） |
-| 依赖可复现性 | 临时 Linux 解析得到 143 包且短期已有 10 个版本漂移；PyPI Torch 会额外引入 CUDA 依赖 | 上线前外部验收 |
+| 依赖可复现性 | Linux 容器按锁全量安装 137 包且 `uv pip check` 通过（torch 2.6.0+cpu / sympy 1.13.1）；锁在场原地重解析零漂移；从头解析会漂到 torch 2.13.0+cpu（属升级决策，另行排期）；CI 已接 `uv pip check` + `lock-verify` 门禁 | 本地 Linux 容器通过；CI runner 实跑与镜像 smoke 仍属外部验收 |
 | Docker 镜像与容器 smoke | 最终源码的前端多阶段镜像构建成功；一次性 Nginx 容器 `/healthz` 与 SPA `/login` 均 200；临时 PostgreSQL/pgvector 与 Redis 已用于迁移和集成验证 | 部分通过；后端镜像与 API/SSE 全链路 smoke 仍待依赖锁定后验收 |
 
 ## 变更状态维护规则

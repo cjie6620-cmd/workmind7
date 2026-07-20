@@ -1,7 +1,16 @@
 """
-PostgreSQL 数据库连接模块
+PostgreSQL 连接层（SQLAlchemy 2.0 async + asyncpg，含 pgvector）
 
-使用 SQLAlchemy 异步引擎，支持 pgvector 向量存储
+对外暴露：
+- Base / async_engine / async_session_factory：ORM 基类与全局引擎、会话工厂。
+  业务层统一 `async with async_session_factory() as session` 取会话；
+  `expire_on_commit=False` 防止 commit 后属性访问触发同步 IO（MissingGreenlet）。
+- get_db_context：需要「成功即 commit、异常即 rollback」语义时的上下文封装。
+- check_tables_status：只读校验表结构是否就绪（启动与健康检查用，不自动建表）。
+- close_db：应用退出时释放连接池。
+
+表结构变更一律走 alembic 迁移（docker-entrypoint.sh 启动时执行 upgrade head）；
+开发建表脚本见 scripts/init_db.py。
 """
 
 import os
@@ -33,7 +42,6 @@ DB_URL = _db_config.get("url")
 if not DB_URL:
     raise RuntimeError("DATABASE_URL 未配置，请在 .env 中设置")
 
-# 异步引擎（推荐用于 FastAPI）
 # 测试环境使用 NullPool，避免 asyncpg 连接复用导致 "another operation is in progress"
 _engine_kwargs: dict = {
     "pool_size": _db_config.get("pool_size", 10),
@@ -53,7 +61,6 @@ async_engine = create_async_engine(
     **_engine_kwargs,
 )
 
-# 异步 Session Factory
 async_session_factory = async_sessionmaker(
     async_engine,
     class_=AsyncSession,
@@ -61,34 +68,13 @@ async_session_factory = async_sessionmaker(
 )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """
-    FastAPI 依赖注入获取数据库会话
-
-    用法:
-        @app.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_db)):
-            ...
-    """
-    async with async_session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
-    """
-    上下文管理器方式获取数据库会话
+    """带事务语义的会话上下文：正常退出自动 commit，异常自动 rollback。
 
     用法:
         async with get_db_context() as db:
-            result = await db.execute(...)
+            db.add(...)
     """
     async with async_session_factory() as session:
         try:
@@ -99,20 +85,11 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-async def init_db():
-    """
-    初始化数据库表结构
-
-    开发专用；生产环境请使用 alembic upgrade head
-    """
-    _register_models()
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def check_tables_status() -> dict:
-    """
-    检查数据库表是否存在（不自动建表）
+    """只读检查 ORM 声明的表是否都已存在（不自动建表）。
+
+    返回 status ∈ {ready, missing_tables, unreachable}，供启动 fail-fast
+    与 /health 就绪探针共用。
     """
     from sqlalchemy import inspect as sa_inspect
 
@@ -141,11 +118,6 @@ async def check_tables_status() -> dict:
     }
 
 
-async def check_tables() -> dict:
-    """兼容旧调用：仅检查状态，不自动建表"""
-    return await check_tables_status()
-
-
 async def close_db():
-    """关闭数据库连接池"""
+    """关闭数据库连接池（应用退出时由 lifespan 调用）"""
     await async_engine.dispose()

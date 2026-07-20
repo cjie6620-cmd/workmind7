@@ -156,22 +156,22 @@ async def delete_template(template_id: str):
 
 
 class ScoreResult(BaseModel):
-    """单个回答评分结果"""
+    """A/B 两侧回答的分维度评分（LLM-as-Judge 输出，1~5 分制）"""
 
-    relevance: int = Field(ge=1, le=5)
-    accuracy: int = Field(ge=1, le=5)
-    clarity: int = Field(ge=1, le=5)
-    conciseness: int = Field(ge=1, le=5)
-    overall: int = Field(ge=1, le=5)
-    winner: Literal["A", "B", "tie"]
-    reason: str = Field(min_length=1, max_length=500)
+    relevance: int = Field(ge=1, le=5, description="相关性：是否切题")
+    accuracy: int = Field(ge=1, le=5, description="准确性：内容是否正确")
+    clarity: int = Field(ge=1, le=5, description="清晰度：表达是否易懂")
+    conciseness: int = Field(ge=1, le=5, description="简洁性：是否冗长")
+    overall: int = Field(ge=1, le=5, description="综合评分")
+    winner: Literal["A", "B", "tie"] = Field(description="该维度组合下的获胜方")
+    reason: str = Field(min_length=1, max_length=500, description="评分理由（一段话）")
 
 
 class CompareResult(BaseModel):
-    """A/B 比较结果"""
+    """A/B 终局裁决结果"""
 
-    winner: Literal["A", "B", "tie"]
-    reason: str = Field(min_length=1, max_length=500)
+    winner: Literal["A", "B", "tie"] = Field(description="综合两侧评分后的最终获胜方")
+    reason: str = Field(min_length=1, max_length=500, description="裁决理由")
 
 
 async def score_ab_test(question, answer_a, answer_b):

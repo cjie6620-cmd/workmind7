@@ -14,6 +14,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const uploading     = ref(false)
   const uploadProgress = ref(0)  // 0-100
   let uploadController = null
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   async function loadDocuments(category = '') {

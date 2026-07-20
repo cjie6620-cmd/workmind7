@@ -57,7 +57,7 @@
         </div>
       </div>
     </aside>
-    <main class="execution-panel" ref="taskListEl">
+    <main class="execution-panel">
       <div v-if="!agentStore.tasks.length" class="empty-state">
         <div class="empty-title">任务执行 Agent</div>
         <div class="empty-desc">在左侧输入任务，Agent 会自动规划步骤，调用合适的工具完成</div>
@@ -144,6 +144,7 @@ import { useConfigStore } from '@/stores/config.js'
 import { useAppStore } from '@/stores/app.js'
 import { useAuthStore } from '@/stores/auth.js'
 import ToolCallCard from '@/components/agent/ToolCallCard.vue'
+import { downloadMarkdown } from '@/utils/download.js'
 import { renderMarkdown } from '@/utils/markdown.js'
 
 const agentStore = useAgentStore()
@@ -151,7 +152,6 @@ const configStore = useConfigStore()
 const appStore   = useAppStore()
 const authStore  = useAuthStore()
 const taskText   = ref('')
-const taskListEl = ref(null)
 const visibleConfigs = computed(() =>
   authStore.isAdmin
     ? agentStore.agentConfigs
@@ -203,11 +203,7 @@ async function downloadReport(task) {
     content = extractReportBody(task.answer)
   }
 
-  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `${filename}.md`; a.click()
-  URL.revokeObjectURL(url)
+  downloadMarkdown(filename, content)
   appStore.toast.success('报告已下载')
 }
 onMounted(() => { agentStore.loadMeta(); agentStore.initSession() })

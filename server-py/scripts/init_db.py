@@ -1,10 +1,12 @@
 """
-初始化 PostgreSQL 数据库和表结构
+初始化 PostgreSQL 数据库和表结构（仅限本地开发/测试库）
 
 使用方法：
     python -m scripts.init_db
 
-首次部署时运行，或使用 alembic 进行 migrations
+注意：本脚本用 create_all 直接建表且不写 alembic_version，
+生产/预发布环境一律使用 `alembic upgrade head`（容器 entrypoint 已内置）。
+用本脚本初始化的库若要转投迁移管理，需先 `alembic stamp head` 对齐版本。
 """
 
 import asyncio

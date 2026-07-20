@@ -78,12 +78,14 @@ def _serialize_sources(sources: list[dict]) -> list[dict]:
 
 
 def _safe_file_name(filename):
+    """净化客户端文件名：剥掉路径分量（防目录穿越）、替换特殊字符，空则生成默认名。"""
     name = (filename or "").replace("\\", "/").split("/")[-1].strip()
     name = re.sub(r"[^\w.\-一-鿿]+", "_", name)
     return name or f"upload_{int(time.time() * 1000)}.txt"
 
 
 def _remove_file(path):
+    """尽力删除上传临时文件（失败不影响主流程）。"""
     if not path:
         return
     try:
@@ -93,6 +95,7 @@ def _remove_file(path):
 
 
 def _parse_multipart_boundary(content_type):
+    """从 Content-Type 头提取 multipart boundary；缺失返回 None。"""
     for part in content_type.split(";"):
         part = part.strip()
         if part.startswith("boundary="):
@@ -300,6 +303,7 @@ async def list_documents(
     category: str | None = None,
     user: UserContext = Depends(get_current_user),
 ):
+    """文档列表（按可见性过滤：本人 + 共享文档；admin 可见全部），可按分类筛选。"""
     docs = filter_docs_for_user(
         await get_doc_registry(),
         user_id=user.user_id,
@@ -315,6 +319,7 @@ async def remove_document(
     doc_id: str,
     user: UserContext = Depends(get_current_user),
 ):
+    """删除文档（仅上传者本人或 admin）；文档与切片同事务删除并使 BM25 索引失效。"""
     try:
         await delete_document(
             doc_id,
@@ -432,6 +437,7 @@ async def rag_stream(
 
 @knowledge_router.get("/categories")
 async def get_categories(user: UserContext = Depends(get_current_user)):
+    """返回当前用户可见文档的分类下拉项（首项固定为「全部文档」）。"""
     docs = filter_docs_for_user(
         await get_doc_registry(),
         user_id=user.user_id,

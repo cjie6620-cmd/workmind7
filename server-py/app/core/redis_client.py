@@ -1,8 +1,11 @@
 """
-Redis 客户端封装
+Redis 客户端封装（同步 redis-py + 全局连接池单例）
 
-提供全局单例 Redis 连接，基于连接池复用。
-配置通过 config['redis'] 读取。
+约定：
+- decode_responses=True，所有读写都是 str，业务层不处理 bytes
+- redis-py 为同步阻塞客户端，async 路径调用必须包 asyncio.to_thread
+  （见 token_store / report_store / cache 等调用方），禁止在事件循环内直连
+- socket 超时 2s：Redis 故障时快速失败，让各业务按自身策略降级或 fail-closed
 """
 
 import redis

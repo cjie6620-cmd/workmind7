@@ -1,3 +1,4 @@
+// Markdown 渲染测试：XSS 净化（script/事件属性剔除）与代码高亮输出
 import { describe, it, expect } from 'vitest'
 import { renderMarkdown } from '@/utils/markdown.js'
 

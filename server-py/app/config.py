@@ -1,14 +1,19 @@
 """
 配置管理模块
 
-统一管理所有环境变量，业务代码通过 config 字典访问配置项。
-采用延迟加载模式，从 .env 文件读取配置。
+统一管理所有环境变量：import 时执行 load_dotenv() 读入 .env（不覆盖已存在的
+环境变量，因此测试 conftest 先行注入的值优先生效），业务代码通过 config 字典访问。
 
-配置项：
-- app: 端口号、环境模式、CORS 白名单
-- ai: DeepSeek API 密钥、模型名称
-- chroma: 向量数据库地址
-- cache: 缓存 TTL
+配置分组：
+- app: 端口、环境模式（APP_ENV 优先，兼容旧 NODE_ENV）、CORS 白名单、业务时区
+- ai: DeepSeek API 密钥、主力模型、embedding 模型与调用护栏（max_tokens/超时/重试）
+- rag: reranker 模型与混合检索召回/精排参数
+- mineru / tavily: 第三方解析与联网搜索凭据
+- cache / redis / database: 缓存 TTL、Redis 连接、PostgreSQL 连接池
+- auth: JWT 开关、密钥与过期策略
+- budget: 日预算与强制模式
+
+启动时必须调用 validate_config() 做 fail-fast 校验（见 main.py lifespan）。
 """
 
 import os
@@ -62,12 +67,8 @@ config = {
         "reranker_device": _env("RERANKER_DEVICE", "cpu"),
         "vector_recall_k": int(_env("VECTOR_RECALL_K", "20")),
         "bm25_recall_k": int(_env("BM25_RECALL_K", "20")),
-        "rrf_top_n": int(_env("RRF_TOP_N", "10")),
         "rerank_threshold": float(_env("RERANK_THRESHOLD", "0.2")),
         "final_k": int(_env("FINAL_K", "4")),
-    },
-    "chroma": {
-        "url": _env("CHROMA_URL", "http://localhost:8000"),
     },
     "mineru": {
         "api_key": _env("MINERU_API_KEY"),

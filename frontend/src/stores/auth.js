@@ -59,6 +59,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(username, password) {
+    // authVersion 竞态守卫：登录请求在途时若发生登出/再次登录，版本号变化，
+    // 迟到的响应被丢弃，避免旧凭据覆盖新会话
     const version = ++authVersion
     const data = await http.post('/auth/login', { username, password })
     if (version !== authVersion) throw new Error('登录状态已变更，请重试')

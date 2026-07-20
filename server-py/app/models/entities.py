@@ -1,7 +1,10 @@
 """
 SQLAlchemy ORM 模型定义
 
-对应 PostgreSQL 表结构，使用 pgvector 存储向量
+对应 PostgreSQL 表结构（含 pgvector 向量列）。约定：
+- 所有 DateTime 均存 UTC-naive（业务时区转换见 utils/business_time.py）
+- 表结构变更走 alembic 迁移，ORM 声明与迁移必须保持一致
+- 每个字段带 comment 说明业务含义（随建表写入数据库 COMMENT）
 """
 
 import uuid
@@ -96,18 +99,30 @@ class Document(Base):
     """
     文档表
 
-    存储知识库文档元信息
+    知识库文档元信息；切片正文与向量在 rag_chunks，随本表级联删除
     """
 
     __tablename__ = "documents"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    title: Mapped[str] = mapped_column(String(256), nullable=False)
-    file_name: Mapped[str] = mapped_column(String(256), nullable=False)
-    category: Mapped[str] = mapped_column(String(64), default="通用", server_default=text("'通用'"), nullable=False)
-    chunks: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
-    chars: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
-    preview: Mapped[str] = mapped_column(Text, nullable=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment="文档唯一 ID"
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False, comment="文档标题（展示用）")
+    file_name: Mapped[str] = mapped_column(String(256), nullable=False, comment="原始文件名（文本入库时为生成名）")
+    category: Mapped[str] = mapped_column(
+        String(64),
+        default="通用",
+        server_default=text("'通用'"),
+        nullable=False,
+        comment="文档分类，检索时可按分类过滤",
+    )
+    chunks: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False, comment="切片数量（入库时统计）"
+    )
+    chars: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False, comment="正文字符数（入库时统计）"
+    )
+    preview: Mapped[str] = mapped_column(Text, nullable=True, comment="正文预览片段（列表页展示）")
     owner_user_id: Mapped[Optional[str]] = mapped_column(
         String(64),
         ForeignKey("users.id", name="fk_documents_owner", ondelete="SET NULL"),
@@ -119,6 +134,7 @@ class Document(Base):
         default=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="入库时间",
     )
 
     __table_args__ = (Index("idx_documents_owner_created", "owner_user_id", "created_at"),)
@@ -128,33 +144,39 @@ class RagChunk(Base):
     """
     RAG 知识库切片表
 
-    存储文档切片和对应的向量嵌入
+    存储文档切片正文与向量嵌入；metadata 冗余 title/category/ownerUserId
+    等字段供检索层过滤下推，避免与 documents 表 join
     """
 
     __tablename__ = "rag_chunks"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment="切片唯一 ID"
+    )
     doc_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("documents.id", name="fk_rag_chunks_document", ondelete="CASCADE"),
         nullable=False,
+        comment="所属文档 ID，文档删除时级联删除切片",
     )
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    # pgvector 向量类型（bge-m3 输出维度 1024）
-    embedding = mapped_column(Vector(1024), nullable=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, comment="切片在文档内的序号（0 起）")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="切片正文")
+    # pgvector 向量类型（bge-m3 输出维度 1024）；NULL 表示嵌入生成失败待补
+    embedding = mapped_column(Vector(1024), nullable=True, comment="bge-m3 语义向量（1024 维）")
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
         default=dict,
         server_default=text("'{}'::jsonb"),
         nullable=False,
+        comment="检索用元数据：title/category/ownerUserId/docId 等",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="创建时间",
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -162,6 +184,7 @@ class RagChunk(Base):
         onupdate=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="更新时间；MAX(updated_at) 作为 BM25 索引版本号",
     )
 
     __table_args__ = (
@@ -184,13 +207,17 @@ class Conversation(Base):
     """
     对话历史表
 
-    存储用户与 AI 的对话记录
+    一行一条消息；会话由 session_id 聚合（前缀区分 chat/agent/knowledge）
     """
 
     __tablename__ = "conversations"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment="消息唯一 ID"
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, comment="会话 ID，格式 {session_|agent_|knowledge_}{userId}_{suffix}"
+    )
     user_id: Mapped[Optional[str]] = mapped_column(
         String(64),
         ForeignKey("users.id", name="fk_conversations_user", ondelete="SET NULL"),
@@ -198,22 +225,26 @@ class Conversation(Base):
         index=True,
         comment="所属用户 ID",
     )
-    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user/assistant/system
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, comment="消息角色：user / assistant / system")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="消息正文")
+    model: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, comment="生成该回复的模型名（用户消息为空）"
+    )
+    tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="估算 token 数（上下文裁剪用）")
     metadata_: Mapped[dict] = mapped_column(
         "metadata",
         JSONB,
         default=dict,
         server_default=text("'{}'::jsonb"),
         nullable=False,
+        comment="扩展元数据：引用来源、反馈评价等",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="消息时间",
     )
 
     __table_args__ = (Index("idx_conversations_session", "session_id", "created_at"),)
@@ -223,13 +254,15 @@ class ApprovalRecord(Base):
     """
     审批记录表
 
-    存储审批流程的完整记录
+    ERP 审批流程演练的完整记录（一个 session 一条记录，request_id 幂等去重）
     """
 
     __tablename__ = "approval_records"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment="审批记录唯一 ID"
+    )
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="发起审批的会话 ID（唯一）")
     user_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("users.id", name="fk_approval_records_user", ondelete="CASCADE"),
@@ -237,20 +270,23 @@ class ApprovalRecord(Base):
         comment="申请人用户 ID，由认证上下文写入",
     )
     request_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, comment="客户端幂等请求 ID")
-    form_type: Mapped[str] = mapped_column(String(32), nullable=False)  # expense/leave
-    form_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    flow_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    approvers: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)  # pending/approved/rejected/needs_info/failed
-    final_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    result_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    form_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="表单类型：expense / leave")
+    form_data: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="表单字段（金额/天数由服务端重算）")
+    flow_json: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="审批链各节点的意见与结论")
+    approvers: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="审批人列表（模拟角色）")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, comment="状态：pending / approved / rejected / needs_info / failed"
+    )
+    final_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="终审意见汇总")
+    result_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="完整流程输出快照")
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="提交时间",
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="流程完成时间")
 
     __table_args__ = (
         Index("idx_approval_session", "session_id", unique=True),
@@ -272,22 +308,30 @@ class AgentConfig(Base):
     """
     Agent/工作流配置表
 
-    存储 Agent、工作流、Prompt 等配置
+    统一存放 agent / workflow / prompt 三类运行时配置；
+    version 为乐观并发修订号（非历史版本仓库）
     """
 
     __tablename__ = "agent_configs"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    config_type: Mapped[str] = mapped_column(String(32), nullable=False)  # agent/workflow/prompt
-    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment="配置唯一 ID"
+    )
+    config_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="配置类型：agent / workflow / prompt")
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, comment="配置名称（全局唯一）")
+    config_json: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="配置内容（按类型各自校验 schema）")
+    version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=text("1"), nullable=False, comment="乐观锁修订号，每次更新 +1"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False, comment="停用后阻止新任务启动（不追溯在途任务）"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="创建时间",
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -295,6 +339,7 @@ class AgentConfig(Base):
         onupdate=utc_now_naive,
         server_default=text("timezone('UTC', CURRENT_TIMESTAMP)"),
         nullable=False,
+        comment="更新时间",
     )
 
     __table_args__ = (
@@ -313,16 +358,36 @@ class MonitorRecord(Base):
     __tablename__ = "monitor_records"
 
     # BigInteger 主键：每次 LLM 调用插一行，Integer(2^31) 会在高流量下溢出。
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    time: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
-    feature: Mapped[str] = mapped_column(String(32), nullable=False)
-    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"), nullable=False)
-    cost_cny: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"), nullable=False)
-    latency_ms: Mapped[float] = mapped_column(Float, default=0, server_default=text("0"), nullable=False)
-    from_cache: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
-    error: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    time: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now_naive, comment="调用发生时间（UTC-naive）"
+    )
+    feature: Mapped[str] = mapped_column(String(32), nullable=False, comment="业务域：chat/agent/knowledge/erp 等")
+    input_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False, comment="输入 token 数"
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False, comment="输出 token 数"
+    )
+    cost_usd: Mapped[float] = mapped_column(
+        Float, default=0, server_default=text("0"), nullable=False, comment="本次调用费用（美元）"
+    )
+    cost_cny: Mapped[float] = mapped_column(
+        Float, default=0, server_default=text("0"), nullable=False, comment="本次调用费用（人民币）"
+    )
+    latency_ms: Mapped[float] = mapped_column(
+        Float, default=0, server_default=text("0"), nullable=False, comment="端到端延迟（毫秒）"
+    )
+    from_cache: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+        nullable=False,
+        comment="是否命中语义/精确缓存（未实际调模型）",
+    )
+    error: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False, comment="调用是否失败（断连取消不计）"
+    )
 
     __table_args__ = (
         Index("idx_monitor_records_time", "time"),

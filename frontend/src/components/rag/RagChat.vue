@@ -20,7 +20,7 @@
     </div>
 
     <!-- 消息列表 -->
-    <div class="message-list" ref="listEl">
+    <div class="message-list">
       <!-- 空状态 -->
       <div v-if="!knStore.messages.length" class="empty-state">
         <div class="icon">🔍</div>
@@ -130,7 +130,6 @@ import { useKnowledgeStore } from '@/stores/knowledge.js'
 import { renderMarkdown } from '@/utils/markdown.js'
 
 const knStore   = useKnowledgeStore()
-const listEl    = ref(null)
 const bottomEl  = ref(null)
 const textareaEl = ref(null)
 const question  = ref('')

@@ -11,6 +11,7 @@ from app.auth import dependencies as auth_dependencies
 from app.auth.models import LoginRequest, RefreshRequest
 from app.auth import users as user_service
 from app.auth.users import AuthStoreUnavailable, StoredUser
+from app.config import config as app_config
 from app.routes.auth import login, refresh
 
 
@@ -191,7 +192,7 @@ def _request_with_token_user(role: str = "admin") -> Request:
 
 @pytest.mark.asyncio
 async def test_protected_request_uses_current_database_role(monkeypatch):
-    monkeypatch.setitem(auth_dependencies.config["auth"], "enabled", True)
+    monkeypatch.setitem(app_config["auth"], "enabled", True)
     monkeypatch.setattr(
         auth_dependencies,
         "get_user_by_id",
@@ -213,7 +214,7 @@ async def test_protected_request_uses_current_database_role(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_protected_request_rejects_disabled_user(monkeypatch):
-    monkeypatch.setitem(auth_dependencies.config["auth"], "enabled", True)
+    monkeypatch.setitem(app_config["auth"], "enabled", True)
     monkeypatch.setattr(auth_dependencies, "get_user_by_id", AsyncMock(return_value=None))
 
     with pytest.raises(HTTPException) as caught:

@@ -1,5 +1,5 @@
 <!-- frontend/src/components/layout/AppSidebar.vue -->
-<!-- 左侧导航栏：Logo + 7个模块菜单 + 底部主题切换 -->
+<!-- 左侧导航栏：Logo + 模块菜单（按路由表生成，admin 专属项对普通用户隐藏）+ 底部主题切换 -->
 <template>
   <aside class="sidebar">
     <!-- Logo 区域 -->

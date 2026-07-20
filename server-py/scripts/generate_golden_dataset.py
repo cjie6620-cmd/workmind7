@@ -33,28 +33,6 @@ def load_documents():
     return docs
 
 
-def extract_facts(text: str, doc_name: str) -> list:
-    """
-    从文本中提取事实段落
-
-    简化实现：按句子拆分，过滤掉太短的句子。
-    实际项目中可用 LLM 生成更丰富的 QA 对。
-    """
-    facts = []
-    # 按中文句号拆分
-    sentences = []
-    for paragraph in text.split('\n'):
-        paragraph = paragraph.strip()
-        if not paragraph or paragraph.startswith('#'):
-            continue
-        for sentence in paragraph.split('。'):
-            sentence = sentence.strip()
-            if len(sentence) > 10:
-                sentences.append(sentence + '。')
-
-    return sentences
-
-
 def generate_qa_pairs(doc_name: str, text: str, category: str) -> list:
     """
     基于规则生成 QA 对

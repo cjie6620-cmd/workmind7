@@ -470,7 +470,7 @@ uvicorn app.main:app --reload --port 3001   # 开发模式（自动重载）
 
 ## 📄 License
 
-[MIT License](LICENSE)
+MIT License（仓库暂未附 LICENSE 文件，正式开源前需补充）
 
 ---
 

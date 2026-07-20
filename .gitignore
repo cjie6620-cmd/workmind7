@@ -9,6 +9,16 @@ build/
 venv/
 server-py/.venv/
 
+# 工具缓存与覆盖率产物
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# 历史遗留的本地向量库实验产物（现用 pgvector）
+frontend/chroma/
+
 # Env
 .env
 .env.local

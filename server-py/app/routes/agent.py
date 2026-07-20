@@ -2,18 +2,15 @@
 Agent 路由模块
 
 提供任务 Agent 执行功能：
-- POST /run: 启动 Agent 执行任务（SSE 流式）
-- GET /tools: 获取可用工具列表
-- GET /examples: 获取任务示例
+- POST /run: 启动 Agent 执行任务（SSE 流式：start → tool_call/tool_result/token* → done/error）
+- GET /tools | /configs | /examples: 工具清单、已发布配置、任务示例
+- GET/DELETE /reports*: 报告列表/详情/下载/删除（按用户隔离，24h TTL）
+- GET /history/{session_id} | /sessions: 任务历史与会话列表
 
-Agent 基于 ReAct 模式（Reasoning + Acting）：
-1. 理解任务需求
-2. 决定是否调用工具
-3. 执行工具获取结果
-4. 根据结果决定下一步
-5. 重复直到任务完成
-
-最多执行 8 步工具调用，防止无限循环。
+执行模型：ReAct 循环（理解任务 → 决定调用工具 → 观察结果 → 循环直到产出回答），
+实现见 services/agent/agent.py。双重护栏：步数上限（默认 10 步，配置可调 1~10）
++ 墙钟超时 AGENT_MAX_WALL_SECONDS；超限由 finalize 节点强制收尾或推送 error。
+任务受理后与连接解耦：浏览器断连只停推送，任务继续执行并落库。
 """
 
 import asyncio
@@ -33,6 +30,7 @@ from ..services.agent.tools import AVAILABLE_TOOL_NAMES
 from ..services.chat.memory import save_message, get_session_info
 from ..services.config.config_service import get_config, list_configs as list_agent_configs
 from ..middleware import check_injection
+from ..utils.background_tasks import wait_or_cancel_tasks
 from ..utils.business_time import business_now
 from ..schemas.requests import AgentRunRequest
 from ..utils.sse import sse_event, sse_error
@@ -52,14 +50,7 @@ AGENT_MAX_WALL_SECONDS = int(os.environ.get("AGENT_MAX_WALL_SECONDS", "300"))
 
 async def shutdown_agent_tasks(timeout_seconds: float = 20) -> None:
     """优雅停机：给在途 Agent 短暂完成窗口（保存回答），超时后取消。"""
-    pending = [task for task in _agent_tasks if not task.done()]
-    if not pending:
-        return
-    _, still_pending = await asyncio.wait(pending, timeout=timeout_seconds)
-    for task in still_pending:
-        task.cancel()
-    if still_pending:
-        await asyncio.gather(*still_pending, return_exceptions=True)
+    await wait_or_cancel_tasks(_agent_tasks, timeout_seconds)
 
 
 def _report_content_disposition(title: str) -> str:

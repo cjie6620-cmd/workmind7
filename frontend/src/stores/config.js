@@ -1,5 +1,6 @@
 // frontend/src/stores/config.js
-// 配置中心状态：统一管理 Agent、Workflow、Prompt 三类配置的 CRUD
+// 配置中心状态：Agent/Workflow/Prompt 三类配置的列表与删除。
+// 创建/更新/启停当前无前端入口（由种子数据与后端接口管理），未实现的操作不预留死代码。
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import http from '@/utils/http.js'
@@ -8,8 +9,9 @@ import { useAppStore } from './app.js'
 export const useConfigStore = defineStore('config', () => {
   const appStore = useAppStore()
 
-  // 按类型缓存配置列表
+  // 按类型缓存最近一次拉取的配置列表
   const configMap = ref({})
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   /**
@@ -28,44 +30,6 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  /** 获取单条配置 */
-  async function getConfig(id) {
-    try {
-      return await http.get(`/configs/${id}`)
-    } catch {
-      return null
-    }
-  }
-
-  /** 创建配置 */
-  async function createConfig(configType, name, configJson) {
-    try {
-      const data = await http.post('/configs', { configType, name, configJson }, { silent: true })
-      appStore.toast.success('配置已创建')
-      await listConfigs(configType)
-      return data.config
-    } catch (err) {
-      appStore.toast.error(err.response?.data?.error?.message || '创建失败')
-      return null
-    }
-  }
-
-  /** 更新配置 */
-  async function updateConfig(id, { name, configJson, expectedVersion } = {}) {
-    try {
-      const payload = {}
-      if (name !== undefined) payload.name = name
-      if (configJson !== undefined) payload.configJson = configJson
-      if (expectedVersion !== undefined) payload.expectedVersion = expectedVersion
-      const data = await http.put(`/configs/${id}`, payload, { silent: true })
-      appStore.toast.success('配置已更新')
-      return data.config
-    } catch (err) {
-      appStore.toast.error(err.response?.data?.error?.message || '更新失败')
-      return null
-    }
-  }
-
   /** 删除配置 */
   async function deleteConfig(id, configType) {
     try {
@@ -79,18 +43,6 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  /** 切换启用/停用 */
-  async function toggleActive(id, active) {
-    try {
-      const endpoint = active ? `/configs/${id}/activate` : `/configs/${id}/deactivate`
-      const data = await http.post(endpoint)
-      return data.config
-    } catch {
-      appStore.toast.error('操作失败')
-      return null
-    }
-  }
-
   function reset() {
     stateVersion += 1
     configMap.value = {}
@@ -98,8 +50,8 @@ export const useConfigStore = defineStore('config', () => {
 
   return {
     configMap,
-    listConfigs, getConfig,
-    createConfig, updateConfig, deleteConfig,
-    toggleActive, reset,
+    listConfigs,
+    deleteConfig,
+    reset,
   }
 })

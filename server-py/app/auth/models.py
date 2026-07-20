@@ -19,7 +19,7 @@ class LoginRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    """刷新 access token 请求"""
+    """携带 refresh token 的请求体（/auth/refresh 与 /auth/logout 共用）"""
 
     refreshToken: str = Field(..., min_length=10, description="refresh token")
 

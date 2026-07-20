@@ -67,10 +67,6 @@ async def load_budget_from_db():
     _daily_budget = await load_budget()
 
 
-def get_daily_budget() -> float:
-    return _daily_budget
-
-
 def record_api_call(
     feature="chat",
     input_tokens=0,
@@ -430,6 +426,7 @@ async def _query_stats_from_db(selected_day: date) -> dict:
 
 
 def _format_last7_rows(rows, selected_day: date) -> list[dict]:
+    """把近 7 日聚合行补齐为连续 7 天序列（无数据的日期填 0，保证图表 X 轴完整）。"""
     rows_by_day = {}
     for row in rows:
         raw_day = row["day"]
@@ -455,6 +452,7 @@ def _format_last7_rows(rows, selected_day: date) -> list[dict]:
 
 
 def _format_feature_rows(rows) -> list[dict]:
+    """按业务域聚合行 → 前端图表契约（feature 补中文 label）。"""
     return [
         {
             "feature": row["feature"],
@@ -468,6 +466,7 @@ def _format_feature_rows(rows) -> list[dict]:
 
 
 def _format_recent_rows(rows) -> list[dict]:
+    """最近调用明细行 → 前端表格契约（时间转业务时区展示）。"""
     recent_calls = []
     for row in rows:
         raw_time = row["time"]
@@ -596,6 +595,8 @@ async def get_stats():
         "last7Days": last7_days,
         "recentCalls": recent_calls,
         "cacheStats": await asyncio.to_thread(cache.get_stats),
+        # DB 故障期间因队列封顶被丢弃的监控记录数；非 0 说明统计存在缺口
+        "pendingDropped": _pending_dropped,
     }
 
 

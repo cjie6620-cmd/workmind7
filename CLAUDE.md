@@ -460,7 +460,8 @@ async def call_llm(prompt: str) -> str:
 
 ### 自动化核查
 
-运行 `python scripts/check_versions.py` 自动扫描所有角色文件中的版本号，对比 PyPI 最新版本。
+> 原 `scripts/check_versions.py` 已随角色文件一并移除。季度复核改为人工执行：
+> 用 Context7 查询各关键库最新版本，与本文件「技术栈速查」表比对并更新。
 
 ---
 

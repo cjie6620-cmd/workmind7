@@ -1,4 +1,11 @@
-"""JWT 签发与校验"""
+"""JWT 签发与校验
+
+令牌模型：
+- access token：短命、纯无状态，每个请求仅验签（get_current_user 另做数据库回查）
+- refresh token：长命、服务端有状态——携带 jti，签发时登记到 Redis
+  （见 token_store），刷新时一次性消费实现轮换，登出时吊销
+两类 token 用 payload 的 type 字段区分，decode_token 按 expected_type 校验。
+"""
 
 from datetime import datetime, timedelta, timezone
 from typing import Any

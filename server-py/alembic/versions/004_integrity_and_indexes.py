@@ -29,8 +29,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # 1. conversations.user_id 外键（SET NULL）。先清孤儿引用为 NULL，避免建约束失败。
     op.execute(
-        "UPDATE conversations SET user_id = NULL "
-        "WHERE user_id IS NOT NULL AND user_id NOT IN (SELECT id FROM users)"
+        "UPDATE conversations SET user_id = NULL WHERE user_id IS NOT NULL AND user_id NOT IN (SELECT id FROM users)"
     )
     op.create_foreign_key(
         "fk_conversations_user",

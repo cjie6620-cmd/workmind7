@@ -4,8 +4,8 @@ PostgreSQL 向量存储
 使用 pgvector 扩展存储和检索向量
 
 特点：
-- 异步操作，基于 asyncpg
-- 支持余弦相似度搜索（<=> 操作符）
+- SQLAlchemy async 会话（底层 asyncpg 驱动），全部参数化查询
+- 余弦相似度搜索（<=> 操作符走 HNSW 索引），支持 category/owner 过滤下推
 - 批量插入优化
 """
 
@@ -15,7 +15,7 @@ from numbers import Real
 from typing import List, Optional, Tuple
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import bindparam, delete, select, text
+from sqlalchemy import bindparam, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.database import async_session_factory
@@ -191,23 +191,6 @@ class PGVectorStore:
                     await owned_session.execute(statement)
 
         logger.info("pgvector: deleted doc", {"doc_id": doc_id})
-
-    async def count(self, doc_id: Optional[str] = None) -> int:
-        """统计切片数量（用 COUNT 聚合，避免把整表行与向量拉进内存）"""
-        from sqlalchemy import func
-
-        stmt = select(func.count()).select_from(RagChunk)
-        if doc_id:
-            stmt = stmt.where(RagChunk.doc_id == uuid.UUID(doc_id))
-        async with async_session_factory() as session:
-            result = await session.execute(stmt)
-            return int(result.scalar_one())
-
-    async def get_doc_ids(self) -> List[str]:
-        """获取所有文档ID列表"""
-        async with async_session_factory() as session:
-            result = await session.execute(text("SELECT DISTINCT doc_id FROM rag_chunks"))
-            return [str(row[0]) for row in result.fetchall()]
 
     def _normalize_vector(self, vector: List[float]) -> List[float]:
         """校验向量维度和数值边界，并归一为 Python float 列表。"""

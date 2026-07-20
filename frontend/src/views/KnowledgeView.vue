@@ -1,4 +1,5 @@
 <!-- frontend/src/views/KnowledgeView.vue -->
+<!-- 知识库页：左侧上传 + 文档列表侧栏，右侧 RAG 问答区（纯组装，逻辑在子组件与 store） -->
 <template>
   <div class="knowledge-view">
     <aside class="doc-panel">

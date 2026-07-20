@@ -25,6 +25,7 @@ export const useAgentStore = defineStore('agent', () => {
   const activeAgentConfigs = computed(() =>
     agentConfigs.value.filter(config => config.isActive)
   )
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   async function loadAgentConfigs() {
@@ -62,7 +63,7 @@ export const useAgentStore = defineStore('agent', () => {
       if (version !== stateVersion || err.code === 'ERR_CANCELED') return
       console.warn('加载 Agent 元数据失败', err.message)
     }
-    // 并行加载 Agent 配置
+    // 配置列表独立加载（fire-and-forget），失败不影响工具/示例展示
     loadAgentConfigs()
   }
 
@@ -88,7 +89,8 @@ export const useAgentStore = defineStore('agent', () => {
         if (version !== stateVersion) return
         if (data.messages?.length) {
           sessionId.value = sid
-          // 将历史消息转换为任务记录
+          // 历史消息按「user 消息 + 紧随其后的 assistant 回答」配对重建任务记录；
+          // 中间步骤（工具调用）不持久化，恢复的任务只有问题与最终回答
           const pairs = []
           const msgs = data.messages
           for (let i = 0; i < msgs.length; i++) {

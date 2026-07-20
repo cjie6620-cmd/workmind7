@@ -1,9 +1,27 @@
 """
 数据模型模块
 
-导出所有 SQLAlchemy ORM 模型
+统一导出全部 SQLAlchemy ORM 实体（定义见 entities.py）。
 """
 
-from .entities import RagChunk, Conversation, ApprovalRecord, AgentConfig
+from .entities import (
+    AgentConfig,
+    ApprovalRecord,
+    Conversation,
+    Document,
+    MonitorRecord,
+    RagChunk,
+    SystemSetting,
+    User,
+)
 
-__all__ = ["RagChunk", "Conversation", "ApprovalRecord", "AgentConfig"]
+__all__ = [
+    "AgentConfig",
+    "ApprovalRecord",
+    "Conversation",
+    "Document",
+    "MonitorRecord",
+    "RagChunk",
+    "SystemSetting",
+    "User",
+]

@@ -11,7 +11,7 @@
       <RoleSelector />
 
       <!-- 消息列表 -->
-      <div class="message-list" ref="listEl">
+      <div class="message-list">
         <!-- 空状态 -->
         <div v-if="!chatStore.messages.length" class="empty-state">
           <el-icon class="role-icon"><component :is="roleIcon" /></el-icon>
@@ -65,7 +65,6 @@ import ChatInput from '@/components/chat/ChatInput.vue'
 import ProfilePanel from '@/components/chat/ProfilePanel.vue'
 
 const chatStore  = useChatStore()
-const listEl     = ref(null)
 const bottomEl   = ref(null)
 const showProfile = ref(true)
 

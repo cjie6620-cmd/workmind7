@@ -30,6 +30,7 @@ export const useErpStore = defineStore('erp', () => {
   const currentAppId = ref('')
   const approvalRequestId = ref('')
   let abortController = null
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   // ── 申请列表 ──────────────────────────────────────────────
@@ -68,6 +69,8 @@ export const useErpStore = defineStore('erp', () => {
     approvalMessages.value = []
     approvalSteps.value    = []
     finalResult.value      = null
+    // 幂等键：同一份表单重试（网络中断/重复点击）复用同一 requestId，
+    // 服务端据此返回已有申请而不重复执行审批；解析新表单时才重新生成
     if (!approvalRequestId.value) approvalRequestId.value = createRequestId()
     const controller = new AbortController()
     const version = stateVersion

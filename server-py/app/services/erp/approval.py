@@ -129,8 +129,8 @@ def _plan_approval_flow(form_data, form_type):
 class ApprovalDecision(BaseModel):
     """审批 Agent 的结构化决定；未知或缺资料不能默认通过。"""
 
-    action: Literal["approve", "reject", "needs_info"]
-    comment: str = Field(min_length=1, max_length=500)
+    action: Literal["approve", "reject", "needs_info"] = Field(description="决定：通过 / 驳回 / 需补充材料")
+    comment: str = Field(min_length=1, max_length=500, description="审批意见（必填，禁止空洞结论）")
 
 
 async def _request_decision(messages) -> ApprovalDecision:

@@ -107,7 +107,7 @@ class LeaveForm(CamelModel):
     workdays: float = Field(ge=0, description="工作日天数（排除周末）")
     reason: str = Field(min_length=1, max_length=300, description="请假原因")
     emergency_contact: Optional[str] = Field(default=None, max_length=128, description="紧急联系人")
-    warnings: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list, description="异常或需要注意的地方（如需双重审批/证明材料）")
 
     @model_validator(mode="after")
     def validate_and_recompute_duration(self):

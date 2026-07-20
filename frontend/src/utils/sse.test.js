@@ -1,3 +1,4 @@
+// SSE 解析器测试：跨 chunk 分隔、CRLF 兼容、损坏 JSON 抛错（防把断流当正常完成）
 import { describe, expect, it, vi } from 'vitest'
 import { createSseParser, parseSseEventBlock } from '@/utils/sse.js'
 

@@ -1,13 +1,21 @@
 """
 WorkMind AI Server - Python Edition  →  Mr.Chen AI Server
 
-服务端入口：注册中间件、路由，启动 FastAPI 服务。
-采用 lifespan 上下文管理器处理启动和关闭逻辑。
+服务端入口：注册中间件、全局异常处理器与路由。
+
+lifespan 启动序列（生产 strict 模式下任一步失败即退出，禁止带病启动）：
+数据库连接与表结构校验 → Redis 连接 → embeddings/reranker 模型预加载（线程池）
+→ pgvector 扩展 → 文档注册表 → 监控持久化任务 → 配置/预算/用户种子数据。
+关闭序列：等待在途 workflow/erp/agent 任务收尾 → 停监控刷写 → 释放连接池。
 """
+
+import asyncio
+import os
+import sys
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 
 from .config import config, validate_config
 from .middleware import setup_middleware
@@ -29,14 +37,13 @@ from .auth.dependencies import get_current_user, require_admin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """生命周期管理：服务启动和关闭时的清理逻辑"""
+    """生命周期管理：服务启动自检/预加载与关闭时的优雅收尾"""
     validate_config()
+    # 生产环境 fail-fast：依赖未就绪宁可拒绝启动，也不提供降级的"半可用"服务
     strict_startup = config["app"]["env"] == "production"
-    embedding_required = str(__import__("os").environ.get("EMBEDDING_REQUIRED", "true")).lower() in ("1", "true", "yes")
+    embedding_required = str(os.environ.get("EMBEDDING_REQUIRED", "true")).lower() in ("1", "true", "yes")
 
-    # 校验数据库连接
-    import sys
-
+    # 校验数据库连接与迁移状态
     try:
         from .core.database import async_session_factory
         from sqlalchemy import text
@@ -57,7 +64,6 @@ async def lifespan(app: FastAPI):
 
     # Redis 承担预算、缓存、报告与工作流暂停快照，生产不可降级为假成功。
     try:
-        import asyncio
         from .core.redis_client import get_redis
 
         if not await asyncio.to_thread(get_redis().ping):
@@ -72,7 +78,6 @@ async def lifespan(app: FastAPI):
     if config["ai"].get("embedding_model"):
         print("Pre-loading embeddings model...", file=sys.stderr)
         try:
-            import asyncio
             from .services.model import get_embeddings
 
             await asyncio.to_thread(get_embeddings)
@@ -90,7 +95,6 @@ async def lifespan(app: FastAPI):
         # 预加载 reranker（同 embeddings），避免首个 RAG 请求同步加载 ~560MB 模型卡死事件循环
         print("Pre-loading reranker model...", file=sys.stderr)
         try:
-            import asyncio
             from .services.rag.reranker import get_reranker
 
             await asyncio.to_thread(get_reranker)
@@ -229,6 +233,7 @@ async def _handle_unexpected_error(request: Request, exc: Exception):
         status_code=500,
         content={"error": {"code": "INTERNAL_ERROR", "message": "服务器内部错误，请稍后重试"}},
     )
+
 
 # ── 路由注册 ───────────────────────────────────────────────────
 app.include_router(health_router, prefix="/health", tags=["health"])

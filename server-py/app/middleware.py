@@ -1,10 +1,15 @@
 """
-中间件配置模块
+中间件层
 
-包含：CORS、Redis 分布式限流、请求日志、JWT 认证、Prompt 注入检测
+单个纯 ASGI 中间件（StreamingSafeMiddleware）按序完成：
+JWT 认证 → 分布式限流 → trace_id 与安全响应头注入 → 请求日志。
+不用 BaseHTTPMiddleware 是因为它会缓冲响应体，破坏 SSE 流式输出。
+另提供 Prompt 注入检测 check_injection 供 chat/agent/knowledge 入口复用。
+中间件注册顺序见 setup_middleware 的说明。
 """
 
 import asyncio
+import os
 import re
 import time
 import uuid
@@ -12,31 +17,11 @@ import uuid
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import config
 from .auth.middleware_utils import is_auth_enabled, is_public_api_path, resolve_auth_user
 from .utils.logger import logger
-
-
-class ChatRequest(BaseModel):
-    """聊天请求参数校验模型"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    message: str = Field(..., min_length=1, max_length=4000)
-    sessionId: str = Field(default="default", alias="session_id")
-    systemPrompt: str = Field(default="", max_length=2000, alias="system_prompt")
-    role: str = "default"
-
-    @field_validator("message")
-    @classmethod
-    def message_not_empty(cls, v):
-        if not v.strip():
-            raise ValueError("消息不能为空")
-        return v
-
 
 INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions?", re.I),
@@ -49,6 +34,7 @@ INJECTION_PATTERNS = [
 
 
 def check_injection(message: str) -> bool:
+    """规则版 Prompt 注入检测（第一道防线；最终防线是工具权限与 owner 隔离）"""
     return any(p.search(message) for p in INJECTION_PATTERNS)
 
 
@@ -111,8 +97,6 @@ async def _check_rate_limit(scope: Scope, path: str) -> bool:
         return count <= limit
     except Exception:
         # 生产昂贵路径 fail-closed；测试环境保留进程内回退，避免无 Redis 时整仓集成不可用。
-        import os
-
         if path in STRICT_RATE_PATHS and os.environ.get("TESTING") != "1":
             logger.warning("rate limit redis unavailable; denying expensive path", {"path": path})
             return False
@@ -120,7 +104,7 @@ async def _check_rate_limit(scope: Scope, path: str) -> bool:
 
 
 class TokenBucket:
-    """进程内限流回退"""
+    """进程内令牌桶：Redis 不可用时非昂贵路径的限流回退（单进程近似值）"""
 
     def __init__(self, capacity=30, refill_rate=10.0):
         self.capacity = capacity
@@ -129,6 +113,7 @@ class TokenBucket:
         self.last_refill = time.monotonic()
 
     def consume(self):
+        """按流逝时间补充令牌后尝试消费一枚；无令牌返回 False（应拒绝请求）"""
         now = time.monotonic()
         elapsed = now - self.last_refill
         self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
@@ -152,6 +137,7 @@ if config["app"]["env"] == "production":
 
 
 def _append_security_headers(headers: list) -> None:
+    """向响应头追加安全头（已存在的同名头不覆盖，尊重路由显式设置）。"""
     existing = {name.lower() for name, _ in headers}
     for name, value in _SECURITY_HEADERS:
         if name not in existing:
@@ -165,6 +151,8 @@ class StreamingSafeMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        """请求处理顺序：认证（公共路径豁免）→ 限流（健康探针豁免）→
+        SSE 路径只注头不计时（避免长连接日志失真）→ 普通路径注头 + 访问日志。"""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

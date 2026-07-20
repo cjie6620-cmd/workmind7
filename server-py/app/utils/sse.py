@@ -1,4 +1,9 @@
-"""SSE 工具模块：基于 sse-starlette 封装事件构造"""
+"""SSE 事件构造（基于 sse-starlette）
+
+全站 SSE 契约：每个流必须以显式终态事件结束（done 或 error），
+前端据此驱动状态机，禁止依赖连接关闭猜测结果。
+错误事件只携带 classify_error 产出的安全文案，原始异常细节仅进日志。
+"""
 
 from sse_starlette.event import JSONServerSentEvent
 

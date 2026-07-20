@@ -1,3 +1,4 @@
+// workflow store 测试：停用模板下 pendingRun 的恢复/取消/终态回退语义
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 

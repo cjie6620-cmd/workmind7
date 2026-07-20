@@ -27,6 +27,7 @@ from ..services.erp.parser import (
     parse_expense_form,
     parse_leave_form,
 )
+from ..utils.background_tasks import wait_or_cancel_tasks
 from ..utils.logger import logger
 from ..utils.sse import sse_error, sse_event
 from ..utils.sse_disconnect import pump_queue_events
@@ -39,14 +40,7 @@ _approval_tasks: set[asyncio.Task] = set()
 
 async def shutdown_approval_tasks(timeout_seconds: float = 20) -> None:
     """优雅停机：给预审短暂完成窗口，超时后取消并由任务写入 failed。"""
-    pending = [task for task in _approval_tasks if not task.done()]
-    if not pending:
-        return
-    _, still_pending = await asyncio.wait(pending, timeout=timeout_seconds)
-    for task in still_pending:
-        task.cancel()
-    if still_pending:
-        await asyncio.gather(*still_pending, return_exceptions=True)
+    await wait_or_cancel_tasks(_approval_tasks, timeout_seconds)
 
 
 def _validated_form(form_type: str, form_data: dict) -> dict:
@@ -62,6 +56,7 @@ def _validated_form(form_type: str, form_data: dict) -> dict:
 
 
 async def _find_by_request(user_id: str, request_id: str | None) -> ApprovalRecord | None:
+    """按 (user_id, request_id) 幂等键查找已存在的申请，用于重复提交复用。"""
     if not request_id:
         return None
     async with async_session_factory() as session:
@@ -73,7 +68,13 @@ async def _find_by_request(user_id: str, request_id: str | None) -> ApprovalReco
         return result.scalar_one_or_none()
 
 
+async def _locked_approval(session, app_id: str) -> ApprovalRecord | None:
+    """行锁读取审批记录：事件快照与终态写入都经此串行化，防并发覆盖。"""
+    return await session.scalar(select(ApprovalRecord).where(ApprovalRecord.session_id == app_id).with_for_update())
+
+
 def _detail(record: ApprovalRecord) -> dict:
+    """将 ORM 记录转换为前端申请详情契约（messages/result 取自 result_json 快照）。"""
     result_json = record.result_json or {}
     return {
         "id": record.session_id,
@@ -202,9 +203,7 @@ async def erp_submit_stream(
         # 每个业务事件都刷新数据库快照，进程异常时仍可看到最后进度。
         if event_type in {"plan", "message", "approver_done"}:
             async with async_session_factory() as session:
-                db_record = await session.scalar(
-                    select(ApprovalRecord).where(ApprovalRecord.session_id == app_id).with_for_update()
-                )
+                db_record = await _locked_approval(session, app_id)
                 if not db_record:
                     raise RuntimeError("审批记录不存在")
                 current_result = dict(db_record.result_json or {})
@@ -222,9 +221,7 @@ async def erp_submit_stream(
         terminal["status"] = "failed"
         try:
             async with async_session_factory() as session:
-                db_record = await session.scalar(
-                    select(ApprovalRecord).where(ApprovalRecord.session_id == app_id).with_for_update()
-                )
+                db_record = await _locked_approval(session, app_id)
                 if db_record:
                     db_record.status = "failed"
                     db_record.final_comment = message
@@ -248,9 +245,7 @@ async def erp_submit_stream(
         try:
             result = await run_approval_flow(form_data, req.formType, collect_event, app_id)
             async with async_session_factory() as session:
-                db_record = await session.scalar(
-                    select(ApprovalRecord).where(ApprovalRecord.session_id == app_id).with_for_update()
-                )
+                db_record = await _locked_approval(session, app_id)
                 if not db_record:
                     raise RuntimeError("审批记录不存在")
                 db_record.status = result["status"]

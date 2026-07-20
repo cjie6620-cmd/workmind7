@@ -1,4 +1,5 @@
 <!-- frontend/src/views/LoginView.vue -->
+<!-- 登录页：用户名密码表单（el-form 校验），成功后按 redirect 参数回跳原页面 -->
 <template>
   <div class="login-page">
     <div class="login-card">

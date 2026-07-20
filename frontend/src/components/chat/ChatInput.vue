@@ -1,5 +1,5 @@
 <!-- frontend/src/components/chat/ChatInput.vue -->
-<!-- 消息输入框：支持多行、Ctrl+Enter 发送、停止生成 -->
+<!-- 消息输入框：Enter 发送、Shift+Enter 换行、自动撑高、停止生成 -->
 <template>
   <div class="chat-input-area">
     <div class="input-wrapper" :class="{ focused }">

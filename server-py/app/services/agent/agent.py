@@ -122,8 +122,7 @@ def _build_agent_graph(runtime_config: dict | None = None):
                 SystemMessage(system_prompt),
                 *state["messages"],
                 HumanMessage(
-                    "已达到工具调用步数上限。请基于以上已获得的信息直接给出尽可能完整的回答，"
-                    "不要再请求调用任何工具。"
+                    "已达到工具调用步数上限。请基于以上已获得的信息直接给出尽可能完整的回答，不要再请求调用任何工具。"
                 ),
             ]
         )

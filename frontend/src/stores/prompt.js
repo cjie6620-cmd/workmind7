@@ -8,6 +8,7 @@ import { useAppStore } from './app.js'
 
 export const usePromptStore = defineStore('prompt', () => {
   const appStore = useAppStore()
+  // 状态版本号：reset() 时自增；异步回调用启动时的快照比对，丢弃切换账号后过期的响应
   let stateVersion = 0
 
   // ── 单次测试状态 ────────────────────────────────────────────
@@ -105,6 +106,11 @@ export const usePromptStore = defineStore('prompt', () => {
   const abTesting = ref(false)
   let abAbortController = null
 
+  /**
+   * A/B 双流对比测试。服务端事件协议：
+   * token_a/token_b（双侧增量）→ done_a/done_b（各侧收尾，带 latencyMs/error）
+   * → scoring（LLM 评分开始）→ eval_done（评分结果）→ done（整体终态）
+   */
   async function runAbTest() {
     if (!abConfig.question.trim() || abTesting.value) return
     abTesting.value = true
@@ -203,13 +209,6 @@ export const usePromptStore = defineStore('prompt', () => {
     appStore.toast.success(`已加载模板「${template.name}」`)
   }
 
-  // 把 A 或 B 区的 Prompt 加载到模板
-  function applyAbTemplate(side, template) {
-    if (side === 'A') abConfig.systemPromptA = template.systemPrompt
-    else              abConfig.systemPromptB = template.systemPrompt
-    appStore.toast.success(`已将「${template.name}」加载到 ${side} 区`)
-  }
-
   async function saveTemplate(form) {
     if (saving.value) return false
     saving.value = true
@@ -300,7 +299,7 @@ export const usePromptStore = defineStore('prompt', () => {
     abConfig, abResult, abTesting,
     templates, editingId, saving, deleting,
     runTest, runAbTest,
-    loadTemplates, applyTemplate, applyAbTemplate,
+    loadTemplates, applyTemplate,
     saveTemplate, deleteTemplate, saveCurrentAsTemplate,
     stopStreams, reset,
   }

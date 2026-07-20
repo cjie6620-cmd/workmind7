@@ -63,6 +63,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
+import { downloadMarkdown } from '@/utils/download.js'
 import { renderMarkdown } from '@/utils/markdown.js'
 
 const props = defineProps({
@@ -87,13 +88,7 @@ function toggle() {
 
 function downloadReport() {
   const r = props.step.report
-  const blob = new Blob([r.content], { type: 'text/markdown;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${r.title}.md`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadMarkdown(r.title, r.content)
 }
 
 const isReport = computed(() => !!props.step.report)
